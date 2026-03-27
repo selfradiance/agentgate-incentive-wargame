@@ -98,6 +98,7 @@ export interface GiniResult {
 
 export interface PoolSurvivalResult {
   survived: boolean;
+  completed: boolean;
   collapseRound: number | null;
 }
 

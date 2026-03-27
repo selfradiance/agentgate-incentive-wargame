@@ -3,7 +3,12 @@
 // normalize → feed to economy engine → record results → check collapse.
 
 import type { GameConfig, SimulationLog, RoundResult, Strategy, Archetype } from './types.js';
-import { createEconomyState, processRound } from './economy.js';
+import {
+  computeMaxExtraction,
+  computeSustainableShare,
+  createEconomyState,
+  processRound,
+} from './economy.js';
 import { RoundDispatcher, normalizeExtraction } from './sandbox/executor.js';
 
 export interface RunnerOptions {
@@ -26,8 +31,12 @@ export async function runSimulation(opts: RunnerOptions): Promise<SimulationLog>
     for (let r = 1; r <= config.rounds; r++) {
       if (economyState.collapsed) break;
 
-      const maxExtraction = Math.round(economyState.pool * config.maxExtractionRate * 100) / 100;
-      const sustainableShare = Math.round(economyState.pool * config.regenerationRate / config.agentCount * 100) / 100;
+      const maxExtraction = computeMaxExtraction(economyState.pool, config.maxExtractionRate);
+      const sustainableShare = computeSustainableShare(
+        economyState.pool,
+        config.regenerationRate,
+        config.agentCount,
+      );
 
       // Build state object for the child
       const state = {
@@ -83,6 +92,11 @@ export async function runSimulation(opts: RunnerOptions): Promise<SimulationLog>
     archetypes,
     strategies,
     rounds,
-    finalState: { ...economyState },
+    finalState: {
+      ...economyState,
+      agentWealth: [...economyState.agentWealth],
+      agentHistory: economyState.agentHistory.map(history => [...history]),
+      poolHistory: [...economyState.poolHistory],
+    },
   };
 }

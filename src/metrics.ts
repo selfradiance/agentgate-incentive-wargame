@@ -12,6 +12,7 @@ import type {
   FirstOverExtractionResult,
   AllMetrics,
 } from './types.js';
+import { computeSustainableShare } from './economy.js';
 
 // 1. Gini Coefficient — wealth inequality
 export function computeGini(wealth: number[]): GiniResult {
@@ -32,8 +33,10 @@ export function computeGini(wealth: number[]): GiniResult {
 
 // 2. Pool Survival
 export function computePoolSurvival(log: SimulationLog): PoolSurvivalResult {
+  const completed = log.finalState.collapsed || log.rounds.length === log.config.rounds;
   return {
-    survived: !log.finalState.collapsed,
+    survived: completed && !log.finalState.collapsed,
+    completed,
     collapseRound: log.finalState.collapseRound,
   };
 }
@@ -59,7 +62,11 @@ export function computeOverExtractionRate(log: SimulationLog): OverExtractionRat
   let overCount = 0;
 
   for (const round of log.rounds) {
-    const sustainableShare = round.poolBefore * log.config.regenerationRate / agentCount;
+    const sustainableShare = computeSustainableShare(
+      round.poolBefore,
+      log.config.regenerationRate,
+      agentCount,
+    );
     for (let i = 0; i < agentCount; i++) {
       if (round.actual[i] > sustainableShare) {
         overCount++;
@@ -148,7 +155,11 @@ export function computeCollapseVelocity(log: SimulationLog): CollapseVelocityRes
 // 8. First Over-Extraction Event
 export function computeFirstOverExtraction(log: SimulationLog): FirstOverExtractionResult | null {
   for (const round of log.rounds) {
-    const sustainableShare = round.poolBefore * log.config.regenerationRate / log.config.agentCount;
+    const sustainableShare = computeSustainableShare(
+      round.poolBefore,
+      log.config.regenerationRate,
+      log.config.agentCount,
+    );
     for (let i = 0; i < log.config.agentCount; i++) {
       if (round.actual[i] > sustainableShare) {
         return {
@@ -156,7 +167,7 @@ export function computeFirstOverExtraction(log: SimulationLog): FirstOverExtract
           agentIndex: i,
           archetypeName: log.archetypes[i].name,
           amount: round.actual[i],
-          sustainableShare: Math.round(sustainableShare * 100) / 100,
+          sustainableShare,
         };
       }
     }

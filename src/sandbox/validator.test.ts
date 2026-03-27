@@ -24,6 +24,12 @@ describe('validateStrategy', () => {
     expect(result.errors.some(e => e.includes('return'))).toBe(true);
   });
 
+  it('rejects extra top-level code after the function', () => {
+    const result = validateStrategy('function test(state) { return 0; } while (true) {}');
+    expect(result.valid).toBe(false);
+    expect(result.errors.some(e => e.includes('exactly one function declaration'))).toBe(true);
+  });
+
   // Blocked patterns
   const blockedCases: [string, string][] = [
     ['function t(state) { return globalThis.x; }', 'globalThis'],
@@ -38,6 +44,8 @@ describe('validateStrategy', () => {
     ['function t(state) { console.log(1); return 0; }', 'console'],
     ['function t(state) { return Function("return 1")(); }', 'Function'],
     ['async function t(state) { return 0; }', 'async'],
+    ['function t(state) { return Math.random(); }', 'Math.random'],
+    ['function t(state) { return Date.now(); }', 'Date'],
   ];
 
   for (const [code, pattern] of blockedCases) {
@@ -75,5 +83,14 @@ describe('validateStrategy', () => {
 }`;
     const result = validateStrategy(code);
     expect(result.valid).toBe(true);
+  });
+
+  it('rejects bracket access to constructor gadgets', () => {
+    const code = `function t(state) {
+  return []['filter']['constructor']('return 1')();
+}`;
+    const result = validateStrategy(code);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some(e => e.includes('constructor bracket access'))).toBe(true);
   });
 });

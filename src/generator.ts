@@ -77,7 +77,7 @@ function cooperativeFallback(archetypeName: string): string {
 async function generateSingleStrategy(
   archetype: Archetype,
   config: GameConfig,
-): Promise<{ code: string; validated: boolean }> {
+): Promise<{ code: string; validationErrors: string[] }> {
   const client = getAnthropicClient();
   const prompt = buildPrompt(archetype, config);
 
@@ -93,6 +93,10 @@ async function generateSingleStrategy(
     .join('')
     .trim();
 
+  if (!text) {
+    throw new Error('Claude returned no strategy text');
+  }
+
   // Strip code fences if Claude included them despite instructions
   const code = text
     .replace(/^```(?:javascript|js)?\n?/i, '')
@@ -100,7 +104,7 @@ async function generateSingleStrategy(
     .trim();
 
   const validation = validateStrategy(code);
-  return { code, validated: validation.valid };
+  return { code, validationErrors: validation.errors };
 }
 
 export interface GenerationResult {
@@ -123,29 +127,35 @@ export async function generateStrategies(
     if (failCount >= 3) break;
 
     let code: string | null = null;
-    let validated = false;
+    let validationErrors: string[] = [];
 
     // Attempt 1
     try {
       const result = await generateSingleStrategy(archetype, config);
       code = result.code;
-      validated = result.validated;
+      validationErrors = result.validationErrors;
+      if (validationErrors.length > 0) {
+        errors.push(`${archetype.name}: Validation failed on attempt 1 — ${validationErrors.join('; ')}`);
+      }
     } catch (err) {
       errors.push(`${archetype.name}: API call failed — ${(err as Error).message}`);
     }
 
     // Attempt 2 (retry) if first failed or didn't validate
-    if (!validated) {
+    if (validationErrors.length > 0 || !code) {
       try {
         const result = await generateSingleStrategy(archetype, config);
         code = result.code;
-        validated = result.validated;
+        validationErrors = result.validationErrors;
+        if (validationErrors.length > 0) {
+          errors.push(`${archetype.name}: Validation failed on retry — ${validationErrors.join('; ')}`);
+        }
       } catch (err) {
         errors.push(`${archetype.name}: Retry API call failed — ${(err as Error).message}`);
       }
     }
 
-    if (validated && code) {
+    if (validationErrors.length === 0 && code) {
       strategies.push({
         archetypeIndex: archetype.index,
         archetypeName: archetype.name,

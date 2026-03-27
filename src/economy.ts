@@ -4,6 +4,14 @@
 
 import type { GameConfig, EconomyState, RoundResult } from './types.js';
 
+function toCents(n: number): number {
+  return Math.round(n * 100);
+}
+
+function fromCents(cents: number): number {
+  return cents / 100;
+}
+
 export function createEconomyState(config: GameConfig): EconomyState {
   return {
     pool: config.poolSize,
@@ -16,8 +24,20 @@ export function createEconomyState(config: GameConfig): EconomyState {
   };
 }
 
-function round2(n: number): number {
+export function round2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+export function computeMaxExtraction(poolLevel: number, maxExtractionRate: number): number {
+  return round2(poolLevel * maxExtractionRate);
+}
+
+export function computeSustainableShare(
+  poolLevel: number,
+  regenerationRate: number,
+  agentCount: number,
+): number {
+  return round2(poolLevel * regenerationRate / agentCount);
 }
 
 /**
@@ -33,26 +53,28 @@ export function processRound(
   config: GameConfig,
 ): RoundResult {
   const poolBefore = state.pool;
+  const poolBeforeCents = toCents(poolBefore);
   state.round += 1;
   state.poolHistory.push(poolBefore);
 
   // Pro-rata rationing
-  const totalRequested = requested.reduce((sum, r) => sum + r, 0);
+  const requestedCents = requested.map(toCents);
+  const totalRequestedCents = requestedCents.reduce((sum, r) => sum + r, 0);
   let actual: number[];
 
-  if (totalRequested <= poolBefore) {
+  if (totalRequestedCents <= poolBeforeCents) {
     // Everyone gets what they asked for
-    actual = requested.map(r => r);
+    actual = requestedCents.map(fromCents);
   } else {
-    // Distribute pro-rata using Math.floor truncation
-    actual = requested.map(r =>
-      Math.floor((r / totalRequested) * poolBefore * 100) / 100
+    // Distribute pro-rata using cent-level floor truncation so the pool is never overspent.
+    actual = requestedCents.map(requestedAmountCents =>
+      fromCents(Math.floor((requestedAmountCents * poolBeforeCents) / totalRequestedCents))
     );
   }
 
   // Deduct extractions from pool
-  const totalActual = actual.reduce((sum, a) => sum + a, 0);
-  state.pool = round2(poolBefore - totalActual);
+  const totalActualCents = actual.reduce((sum, amount) => sum + toCents(amount), 0);
+  state.pool = fromCents(poolBeforeCents - totalActualCents);
 
   // Update agent wealth and history
   for (let i = 0; i < actual.length; i++) {

@@ -85,10 +85,11 @@ describe('computeGini', () => {
 // --- Pool Survival ---
 
 describe('computePoolSurvival', () => {
-  it('reports survival when pool did not collapse', () => {
+  it('reports incomplete when the run ended before all rounds were played', () => {
     const log = makeLog();
     const result = computePoolSurvival(log);
-    expect(result.survived).toBe(true);
+    expect(result.survived).toBe(false);
+    expect(result.completed).toBe(false);
     expect(result.collapseRound).toBeNull();
   });
 
@@ -101,7 +102,26 @@ describe('computePoolSurvival', () => {
     });
     const result = computePoolSurvival(log);
     expect(result.survived).toBe(false);
+    expect(result.completed).toBe(true);
     expect(result.collapseRound).toBe(10);
+  });
+
+  it('reports survival only when all configured rounds completed', () => {
+    const log = makeLog({
+      rounds: [
+        makeRound({ round: 1 }),
+        makeRound({ round: 2 }),
+        makeRound({ round: 3 }),
+      ],
+      config: { ...defaultConfig, rounds: 3 },
+      finalState: {
+        pool: 900, round: 3, agentWealth: [10, 10, 10],
+        agentHistory: [[], [], []], poolHistory: [1000, 950, 900], collapsed: false, collapseRound: null,
+      },
+    });
+    const result = computePoolSurvival(log);
+    expect(result.survived).toBe(true);
+    expect(result.completed).toBe(true);
   });
 });
 
@@ -159,6 +179,42 @@ describe('computeOverExtractionRate', () => {
     const result = computeOverExtractionRate(log);
     expect(result.overExtractionCount).toBe(3);
     expect(result.overExtractionRate).toBe(1);
+  });
+
+  it('uses the rounded sustainable share seen by strategies', () => {
+    const config = { ...defaultConfig, agentCount: 7 };
+    const actual = new Array(7).fill(14.29);
+    const log = makeLog({
+      config,
+      archetypes: Array.from({ length: 7 }, (_, index) => ({ index, name: `A${index}`, description: '' })),
+      strategies: Array.from({ length: 7 }, (_, index) => ({
+        archetypeIndex: index,
+        archetypeName: `A${index}`,
+        code: '',
+        isFallback: false,
+      })),
+      finalState: {
+        pool: 900,
+        round: 1,
+        agentWealth: actual,
+        agentHistory: actual.map(amount => [amount]),
+        poolHistory: [1000],
+        collapsed: false,
+        collapseRound: null,
+      },
+      rounds: [
+        makeRound({
+          poolBefore: 1000,
+          actual,
+          requested: actual,
+          agentWealth: actual,
+        }),
+      ],
+    });
+
+    const result = computeOverExtractionRate(log);
+    expect(result.overExtractionCount).toBe(0);
+    expect(computeFirstOverExtraction(log)).toBeNull();
   });
 });
 
@@ -319,6 +375,7 @@ describe('computeAllMetrics', () => {
     const metrics = computeAllMetrics(log);
     expect(metrics.gini).toBeDefined();
     expect(metrics.poolSurvival).toBeDefined();
+    expect(metrics.poolSurvival.completed).toBe(false);
     expect(metrics.agentWealth).toHaveLength(3);
     expect(metrics.overExtractionRate).toBeDefined();
     expect(metrics.systemEfficiency).toBeDefined();

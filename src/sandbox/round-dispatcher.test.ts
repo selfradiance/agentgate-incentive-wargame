@@ -27,6 +27,20 @@ function makeState(overrides: Record<string, unknown> = {}) {
 }
 
 describe('RoundDispatcher', () => {
+  it('can be spawned repeatedly without leaking the old child reference', async () => {
+    dispatcher = new RoundDispatcher();
+    await dispatcher.spawn();
+    await dispatcher.spawn();
+
+    const result = await dispatcher.executeRound(
+      ['function ok(state) { return 7; }'],
+      makeState({ agentCount: 1, agentWealth: [0], agentHistory: [[]], sustainableShare: 100 }),
+    );
+
+    expect(result.childCrashed).toBe(false);
+    expect(result.extractions[0]).toBe(7);
+  }, 10000);
+
   it('executes strategies and returns extractions', async () => {
     dispatcher = new RoundDispatcher();
     await dispatcher.spawn();
@@ -129,11 +143,11 @@ describe('RoundDispatcher', () => {
     const state2 = makeState({ round: 2, agentCount: 1, agentWealth: [10], agentHistory: [[10]], poolHistory: [1000], sustainableShare: 100 });
     const result = await dispatcher.executeRound(round2Strategies, state2);
 
-    // Should be 0 — globalThis was nullified, no leakage between rounds
+    // Should be 0 — each round gets a fresh vm context, so nothing leaks
     expect(result.extractions[0]).toBe(0);
   }, 10000);
 
-  it('handles timeout — parent kills child after 3 seconds', async () => {
+  it('times out a single strategy inside the vm context', async () => {
     dispatcher = new RoundDispatcher();
     await dispatcher.spawn();
 
@@ -144,20 +158,23 @@ describe('RoundDispatcher', () => {
     const state = makeState({ agentCount: 1, agentWealth: [0], agentHistory: [[]], sustainableShare: 100 });
     const result = await dispatcher.executeRound(strategies, state);
 
-    expect(result.timedOut).toBe(true);
-    expect(result.extractions).toEqual([0]);
+    expect(result.timedOut).toBe(false);
+    expect(result.childCrashed).toBe(false);
+    expect(result.extractions[0]).toEqual(
+      expect.objectContaining({ error: expect.stringContaining('Script execution timed out') })
+    );
   }, 10000);
 
-  it('recovers after timeout — can execute another round', async () => {
+  it('continues serving later rounds after a strategy vm timeout', async () => {
     dispatcher = new RoundDispatcher();
     await dispatcher.spawn();
 
-    // Round 1: timeout
+    // Round 1: strategy timeout
     const hangStrategies = ['function hang(state) { while(true) {} }'];
     const state1 = makeState({ agentCount: 1, agentWealth: [0], agentHistory: [[]], sustainableShare: 100 });
     await dispatcher.executeRound(hangStrategies, state1);
 
-    // Round 2: should work fine (new child spawned)
+    // Round 2: should still work fine
     const okStrategies = ['function ok(state) { return 42; }'];
     const state2 = makeState({ agentCount: 1, agentWealth: [0], agentHistory: [[]], sustainableShare: 100 });
     const result = await dispatcher.executeRound(okStrategies, state2);
@@ -165,4 +182,48 @@ describe('RoundDispatcher', () => {
     expect(result.timedOut).toBe(false);
     expect(result.extractions[0]).toBe(42);
   }, 15000);
+
+  it('blocks constructor-based access to process', async () => {
+    dispatcher = new RoundDispatcher();
+    await dispatcher.spawn();
+
+    const strategies = [
+      `function probe(state) {
+        return []['filter']['constructor']('return process')().pid;
+      }`,
+    ];
+
+    const state = makeState({ agentCount: 1, agentWealth: [0], agentHistory: [[]], sustainableShare: 100 });
+    const result = await dispatcher.executeRound(strategies, state);
+
+    expect(result.timedOut).toBe(false);
+    expect(result.childCrashed).toBe(false);
+    expect(result.extractions[0]).toEqual(
+      expect.objectContaining({ error: expect.stringContaining('Code generation from strings disallowed') })
+    );
+  }, 10000);
+
+  it('prevents prototype poisoning from leaking across rounds', async () => {
+    dispatcher = new RoundDispatcher();
+    await dispatcher.spawn();
+
+    const poisonStrategies = [
+      `function poison(state) {
+        Array.prototype.hacked = 77;
+        return 0;
+      }`,
+    ];
+
+    const readStrategies = [
+      'function read(state) { return [].hacked || 0; }',
+    ];
+
+    const state1 = makeState({ agentCount: 1, agentWealth: [0], agentHistory: [[]], sustainableShare: 100 });
+    const state2 = makeState({ round: 2, agentCount: 1, agentWealth: [0], agentHistory: [[]], sustainableShare: 100 });
+
+    await dispatcher.executeRound(poisonStrategies, state1);
+    const result = await dispatcher.executeRound(readStrategies, state2);
+
+    expect(result.extractions[0]).toBe(0);
+  }, 10000);
 });

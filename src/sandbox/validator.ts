@@ -2,6 +2,8 @@
 // String-level code checks adapted for economy mode (pure-function contract).
 // Structural lint — not a semantic guarantee. Runtime normalization is the safety net.
 
+import { Script } from 'node:vm';
+
 export interface ValidationResult {
   valid: boolean;
   errors: string[];
@@ -22,6 +24,12 @@ const BLOCKED_PATTERNS: [RegExp, string][] = [
   [/\bPromise\b/, 'Promise not allowed'],
   [/\basync\b/, 'async not allowed'],
   [/\bawait\b/, 'await not allowed'],
+
+  // No nondeterministic inputs
+  [/\bMath\.random\s*\(/, 'Math.random not allowed'],
+  [/\bDate\b/, 'Date access not allowed'],
+  [/\bperformance\b/, 'performance access not allowed'],
+  [/\bcrypto\b/, 'crypto access not allowed'],
 
   // No process/system access
   [/\bprocess\b/, 'process access not allowed'],
@@ -59,23 +67,36 @@ const BLOCKED_PATTERNS: [RegExp, string][] = [
   [/\bAtomics\b/, 'Atomics not allowed'],
 ];
 
+const RAW_BLOCKED_PATTERNS: [RegExp, string][] = [
+  [/\[['"]constructor['"]\]/, 'constructor bracket access not allowed'],
+  [/\[['"]__proto__['"]\]/, '__proto__ bracket access not allowed'],
+  [/\[['"]prototype['"]\]/, 'prototype bracket access not allowed'],
+];
+
 export function validateStrategy(code: string): ValidationResult {
   const errors: string[] = [];
+  const trimmed = code.trim();
 
   // Structural check: must match function signature
-  const sigMatch = code.match(/^function\s+\w+\s*\(\s*state\s*\)\s*\{/);
+  const sigMatch = trimmed.match(/^function\s+\w+\s*\(\s*state\s*\)\s*\{/);
   if (!sigMatch) {
     errors.push('Strategy must match: function <name>(state) { ... }');
   }
 
   // Structural check: must contain at least one return statement
-  if (!/\breturn\b/.test(code)) {
+  if (!/\breturn\b/.test(trimmed)) {
     errors.push('Strategy must contain at least one return statement');
+  }
+
+  try {
+    new Script(`(${trimmed})`);
+  } catch {
+    errors.push('Strategy must be exactly one function declaration with no extra top-level code');
   }
 
   // Check blocked patterns
   // Strip string literals and comments to avoid false positives
-  const stripped = code
+  const stripped = trimmed
     .replace(/\/\/.*$/gm, '')           // single-line comments
     .replace(/\/\*[\s\S]*?\*\//g, '')   // multi-line comments
     .replace(/'(?:[^'\\]|\\.)*'/g, '""')  // single-quoted strings
@@ -84,6 +105,12 @@ export function validateStrategy(code: string): ValidationResult {
 
   for (const [pattern, message] of BLOCKED_PATTERNS) {
     if (pattern.test(stripped)) {
+      errors.push(message);
+    }
+  }
+
+  for (const [pattern, message] of RAW_BLOCKED_PATTERNS) {
+    if (pattern.test(trimmed)) {
       errors.push(message);
     }
   }

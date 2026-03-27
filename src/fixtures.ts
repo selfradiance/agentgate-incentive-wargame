@@ -23,7 +23,7 @@ export function retaliator(state: StrategyState): number {
   // Check all prior rounds — grim trigger is permanent
   for (let r = 0; r < state.allHistory[0].length; r++) {
     const poolAtRound = state.poolHistory[r];
-    const shareAtRound = poolAtRound * state.regenerationRate / state.agentCount;
+    const shareAtRound = Math.round((poolAtRound * state.regenerationRate / state.agentCount) * 100) / 100;
     for (let a = 0; a < state.agentCount; a++) {
       if (state.allHistory[a][r] > shareAtRound) {
         return state.maxExtraction;
@@ -43,7 +43,7 @@ export function forgiver(state: StrategyState): number {
 
   // Check last round for over-extraction by OTHER agents
   const lastPoolLevel = state.poolHistory[state.poolHistory.length - 1];
-  const lastSustainableShare = lastPoolLevel * state.regenerationRate / state.agentCount;
+  const lastSustainableShare = Math.round((lastPoolLevel * state.regenerationRate / state.agentCount) * 100) / 100;
 
   let anyOtherOverExtracted = false;
   for (let a = 0; a < state.agentCount; a++) {

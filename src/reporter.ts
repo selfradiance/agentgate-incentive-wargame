@@ -85,7 +85,7 @@ ${roundData}
 
 ## Metrics
 1. **Gini Coefficient:** ${metrics.gini.gini}
-2. **Pool Survival:** ${metrics.poolSurvival.survived ? 'SURVIVED all rounds' : `COLLAPSED at round ${metrics.poolSurvival.collapseRound}`}
+2. **Pool Survival:** ${!metrics.poolSurvival.completed ? `INCOMPLETE after ${roundsPlayed} of ${config.rounds} rounds` : metrics.poolSurvival.survived ? 'SURVIVED all rounds' : `COLLAPSED at round ${metrics.poolSurvival.collapseRound}`}
 3. **Per-Agent Wealth (ranked):**
 ${metrics.agentWealth.map(a => `   - ${a.archetypeName}: ${a.totalWealth}`).join('\n')}
 4. **Over-Extraction Rate:** ${(metrics.overExtractionRate.overExtractionRate * 100).toFixed(1)}% (${metrics.overExtractionRate.overExtractionCount}/${metrics.overExtractionRate.totalAgentRounds} agent-rounds)
@@ -106,6 +106,7 @@ Generate a structured report with these exact sections:
 
 Important:
 - Be empirical, not prescriptive. Report what happened in this specific run.
+- If the run is incomplete, say that clearly and do not describe it as survival.
 - Do not invent or hallucinate data for rounds not included in the log.
 - The over-extraction rate may spike artificially near collapse because MSY approaches zero — note this if it appears.
 - "First Over-Extraction" measures an event, not morality. Use neutral language.`;
@@ -134,7 +135,12 @@ export async function generateReport(
     const report = response.content
       .filter(block => block.type === 'text')
       .map(block => block.text)
-      .join('');
+      .join('')
+      .trim();
+
+    if (!report) {
+      throw new Error('Claude returned an empty report');
+    }
 
     return { report, metricsOnly: false };
   } catch (err) {
@@ -153,7 +159,7 @@ export function formatMetricsOnly(metrics: AllMetrics): string {
     '══════════════════════════════════════════',
     '',
     `  Gini Coefficient:     ${metrics.gini.gini}`,
-    `  Pool Survival:        ${metrics.poolSurvival.survived ? 'SURVIVED' : `COLLAPSED (round ${metrics.poolSurvival.collapseRound})`}`,
+    `  Pool Survival:        ${!metrics.poolSurvival.completed ? 'INCOMPLETE' : metrics.poolSurvival.survived ? 'SURVIVED' : `COLLAPSED (round ${metrics.poolSurvival.collapseRound})`}`,
     `  Over-Extraction Rate: ${(metrics.overExtractionRate.overExtractionRate * 100).toFixed(1)}%`,
     `  System Efficiency:    ${metrics.systemEfficiency.efficiency}`,
     `  Resource Health:      min ${(metrics.resourceHealth.minPoolFraction * 100).toFixed(1)}% / avg ${(metrics.resourceHealth.avgPoolFraction * 100).toFixed(1)}% / final ${(metrics.resourceHealth.finalPoolFraction * 100).toFixed(1)}%`,

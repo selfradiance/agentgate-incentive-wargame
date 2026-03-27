@@ -47,7 +47,7 @@ function makeLog(overrides: Partial<SimulationLog> = {}): SimulationLog {
 function makeMetrics(): AllMetrics {
   return {
     gini: { gini: 0.55 },
-    poolSurvival: { survived: true, collapseRound: null },
+    poolSurvival: { survived: true, completed: true, collapseRound: null },
     agentWealth: [
       { archetypeName: 'Greedy', totalWealth: 380 },
       { archetypeName: 'Cooperative', totalWealth: 57 },
@@ -127,9 +127,16 @@ describe('formatMetricsOnly', () => {
 
   it('shows COLLAPSED when pool did not survive', () => {
     const metrics = makeMetrics();
-    metrics.poolSurvival = { survived: false, collapseRound: 15 };
+    metrics.poolSurvival = { survived: false, completed: true, collapseRound: 15 };
     const output = formatMetricsOnly(metrics);
     expect(output).toContain('COLLAPSED');
     expect(output).toContain('round 15');
+  });
+
+  it('shows INCOMPLETE when simulation did not finish', () => {
+    const metrics = makeMetrics();
+    metrics.poolSurvival = { survived: false, completed: false, collapseRound: null };
+    const output = formatMetricsOnly(metrics);
+    expect(output).toContain('INCOMPLETE');
   });
 });

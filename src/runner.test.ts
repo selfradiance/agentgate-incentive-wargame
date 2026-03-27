@@ -121,4 +121,5 @@ describe('runSimulation — full integration with fixtures', () => {
       expect(decimals).toBeLessThanOrEqual(2);
     }
   }, 30000);
+
 });

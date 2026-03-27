@@ -1,6 +1,7 @@
 // Agent 006: CLI — Entry point, arg parsing + validation, orchestration
 
 import { parseArgs } from 'node:util';
+import { pathToFileURL } from 'node:url';
 import { ARCHETYPES } from './archetypes.js';
 import { FIXTURE_STRATEGIES } from './fixtures.js';
 import { generateStrategies } from './generator.js';
@@ -21,8 +22,11 @@ interface CLIFlags {
   fixtures: boolean;
 }
 
-function parseAndValidateArgs(): CLIFlags {
+const MAX_POOL_SIZE = 100_000;
+
+export function parseAndValidateArgs(args: string[] = process.argv.slice(2)): CLIFlags {
   const { values } = parseArgs({
+    args,
     options: {
       rounds:       { type: 'string', default: String(DEFAULT_CONFIG.rounds) },
       pool:         { type: 'string', default: String(DEFAULT_CONFIG.poolSize) },
@@ -40,8 +44,16 @@ function parseAndValidateArgs(): CLIFlags {
   }
 
   const pool = Number(values.pool);
-  if (!Number.isFinite(pool) || pool < 1) {
-    throw new Error(`Invalid --pool value: ${values.pool}. Must be a number >= 1.`);
+  const roundedPool = Math.round(pool * 100) / 100;
+  if (
+    !Number.isFinite(pool)
+    || pool < 1
+    || pool > MAX_POOL_SIZE
+    || Math.abs(pool - roundedPool) > 1e-9
+  ) {
+    throw new Error(
+      `Invalid --pool value: ${values.pool}. Must be between 1.00 and ${MAX_POOL_SIZE.toFixed(2)} with at most 2 decimal places.`
+    );
   }
 
   const regen = Number(values.regen);
@@ -56,7 +68,7 @@ function parseAndValidateArgs(): CLIFlags {
 
   return {
     rounds,
-    pool,
+    pool: roundedPool,
     regen,
     maxExtract,
     verbose: values.verbose ?? false,
@@ -101,10 +113,25 @@ function printRoundProgress(round: number, totalRounds: number, poolAfter: numbe
   }
 }
 
-function printSummaryBox(config: GameConfig, survived: boolean, collapseRound: number | null, substitutions: string[]): void {
+function printSummaryBox(survived: boolean, collapseRound: number | null, substitutions: string[]): void {
   console.log('');
   console.log('┌──────────────────────────────────────────────────────┐');
   console.log(`│  RESULT: ${survived ? 'COMMONS SURVIVED ✓' : `COMMONS COLLAPSED (round ${collapseRound}) ✗`}`.padEnd(55) + '│');
+  if (substitutions.length > 0) {
+    console.log('│                                                      │');
+    console.log('│  NOTE: Fallback substitutions were active:           │');
+    for (const name of substitutions) {
+      console.log(`│    → ${name.padEnd(48)}│`);
+    }
+  }
+  console.log('└──────────────────────────────────────────────────────┘');
+}
+
+function printIncompleteSummaryBox(completedRounds: number, totalRounds: number, substitutions: string[]): void {
+  console.log('');
+  console.log('┌──────────────────────────────────────────────────────┐');
+  console.log(`│  RESULT: ${'SIMULATION INCOMPLETE ✗'.padEnd(55)}│`);
+  console.log(`│  NOTE: ${`${completedRounds}/${totalRounds} rounds completed before termination.`.padEnd(46)}│`);
   if (substitutions.length > 0) {
     console.log('│                                                      │');
     console.log('│  NOTE: Fallback substitutions were active:           │');
@@ -197,7 +224,13 @@ async function main(): Promise<void> {
   // --- Metrics ---
   const metrics = computeAllMetrics(log);
 
-  printSummaryBox(config, metrics.poolSurvival.survived, metrics.poolSurvival.collapseRound, substitutions);
+  const incomplete = !metrics.poolSurvival.completed;
+
+  if (incomplete) {
+    printIncompleteSummaryBox(log.rounds.length, config.rounds, substitutions);
+  } else {
+    printSummaryBox(metrics.poolSurvival.survived, metrics.poolSurvival.collapseRound, substitutions);
+  }
 
   // --- Report ---
   console.log('');
@@ -231,14 +264,17 @@ async function main(): Promise<void> {
 
   // --- Exit Code ---
   // 0 = survived, 1 = collapsed or incomplete, 2 = never ran
-  const incomplete = !log.finalState.collapsed && log.rounds.length < config.rounds;
   if (log.finalState.collapsed || incomplete) {
     process.exit(1);
   }
   process.exit(0);
 }
 
-main().catch((err) => {
-  console.error(`Fatal error: ${(err as Error).message}`);
-  process.exit(2);
-});
+const isMainModule = !!process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isMainModule) {
+  main().catch((err) => {
+    console.error(`Fatal error: ${(err as Error).message}`);
+    process.exit(2);
+  });
+}

@@ -1,8 +1,18 @@
-// Agent 006: Simulation Runner
-// Round loop: build state → send to child → parent timeout → collect extractions →
-// normalize → feed to economy engine → record results → check collapse.
+// Agent 006: Simulation Runner + Campaign Loop (v0.2.0)
+// Single run: round loop with sandbox execution.
+// Campaign: multiple runs with adapter-driven strategy adaptation between runs.
 
-import type { GameConfig, SimulationLog, RoundResult, Strategy, Archetype } from './types.js';
+import type {
+  GameConfig,
+  SimulationLog,
+  RoundResult,
+  Strategy,
+  Archetype,
+  AllMetrics,
+  CampaignResult,
+  RunResult,
+  CanonicalState,
+} from './types.js';
 import {
   computeMaxExtraction,
   computeSustainableShare,
@@ -10,6 +20,19 @@ import {
   processRound,
 } from './economy.js';
 import { RoundDispatcher, normalizeExtraction } from './sandbox/executor.js';
+import { computeAllMetrics } from './metrics.js';
+import {
+  buildCanonicalStateBattery,
+  extractRunSnapshots,
+  computeStrategyDrift,
+  computeBehavioralConvergence,
+  computeResilienceTrend,
+  detectAdaptationTheater,
+  detectArchetypeCollapse,
+} from './metrics.js';
+import type { AdaptAllResult } from './adapter.js';
+
+// --- Single Simulation Run (unchanged from v0.1.0) ---
 
 export interface RunnerOptions {
   config: GameConfig;
@@ -98,5 +121,118 @@ export async function runSimulation(opts: RunnerOptions): Promise<SimulationLog>
       agentHistory: economyState.agentHistory.map(history => [...history]),
       poolHistory: [...economyState.poolHistory],
     },
+  };
+}
+
+// --- v0.2.0: Campaign Loop ---
+
+export interface CampaignOptions {
+  config: GameConfig;
+  archetypes: Archetype[];
+  initialStrategies: Strategy[];
+  totalRuns: number;
+  adaptFn: (
+    archetypes: Archetype[],
+    priorStrategies: Strategy[],
+    log: SimulationLog,
+    metrics: AllMetrics,
+    runNumber: number,
+    config: GameConfig,
+  ) => Promise<AdaptAllResult>;
+  onRunStart?: (runNumber: number) => void;
+  onRound?: (runNumber: number, result: RoundResult) => void;
+  onRunEnd?: (runNumber: number, log: SimulationLog, metrics: AllMetrics) => void;
+  onAdaptStart?: (runNumber: number) => void;
+  onAdaptEnd?: (runNumber: number, result: AdaptAllResult) => void;
+}
+
+export async function runCampaign(opts: CampaignOptions): Promise<CampaignResult> {
+  const { config, archetypes, totalRuns, adaptFn } = opts;
+
+  let strategies = opts.initialStrategies;
+  const allRunResults: RunResult[] = [];
+  const canonicalStates = buildCanonicalStateBattery(config);
+
+  for (let run = 1; run <= totalRuns; run++) {
+    // Adaptation phase (runs 2+)
+    let priorStrategies: Strategy[] | undefined;
+    if (run > 1) {
+      const priorResult = allRunResults[run - 2];
+
+      opts.onAdaptStart?.(run);
+
+      const adaptResult = await adaptFn(
+        archetypes,
+        strategies,
+        priorResult.log,
+        priorResult.metrics,
+        run - 1,  // runNumber = which run just completed
+        config,
+      );
+
+      opts.onAdaptEnd?.(run, adaptResult);
+
+      // Abort if >= 2 failures
+      if (adaptResult.failureCount >= 2) {
+        return {
+          runs: allRunResults,
+          resilienceTrend: computeResilienceTrend(allRunResults),
+          adaptationTheater: detectAdaptationTheater(allRunResults),
+          archetypeCollapse: detectArchetypeCollapse(allRunResults),
+          aborted: true,
+          abortReason: `Campaign aborted: ${adaptResult.failureCount} agents failed adaptation in run ${run} (threshold: 2).`,
+        };
+      }
+
+      priorStrategies = strategies;
+      strategies = adaptResult.strategies;
+    }
+
+    // Run simulation
+    opts.onRunStart?.(run);
+
+    const log = await runSimulation({
+      config,
+      archetypes,
+      strategies,
+      onRound: opts.onRound ? (result) => opts.onRound!(run, result) : undefined,
+    });
+
+    const metrics = computeAllMetrics(log);
+
+    opts.onRunEnd?.(run, log, metrics);
+
+    // Compute campaign metrics
+    const augmentedBattery: CanonicalState[] = [...canonicalStates];
+    if (run > 1) {
+      const priorLog = allRunResults[run - 2].log;
+      augmentedBattery.push(...extractRunSnapshots(priorLog));
+    }
+
+    const drift = (run > 1 && priorStrategies)
+      ? computeStrategyDrift(priorStrategies, strategies, augmentedBattery)
+      : undefined;
+
+    const convergence = computeBehavioralConvergence(strategies, augmentedBattery);
+
+    const runResult: RunResult = {
+      runNumber: run,
+      log,
+      metrics,
+      strategies: [...strategies],
+      drift,
+      convergence,
+      adaptationResults: run > 1 ? allRunResults[run - 2]?.adaptationResults : undefined,
+    };
+
+    allRunResults.push(runResult);
+  }
+
+  return {
+    runs: allRunResults,
+    resilienceTrend: computeResilienceTrend(allRunResults),
+    adaptationTheater: detectAdaptationTheater(allRunResults),
+    archetypeCollapse: detectArchetypeCollapse(allRunResults),
+    aborted: false,
   };
 }

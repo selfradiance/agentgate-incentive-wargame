@@ -1,14 +1,16 @@
 // Agent 006: CLI — Entry point, arg parsing + validation, orchestration
+// v0.2.0: Adds --runs flag for campaign mode with strategy adaptation.
 
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { ARCHETYPES } from './archetypes.js';
 import { FIXTURE_STRATEGIES } from './fixtures.js';
 import { generateStrategies } from './generator.js';
-import { runSimulation } from './runner.js';
+import { runSimulation, runCampaign } from './runner.js';
 import { computeAllMetrics } from './metrics.js';
-import { generateReport, formatMetricsOnly } from './reporter.js';
-import type { GameConfig, Strategy } from './types.js';
+import { generateReport, formatMetricsOnly, generateCampaignReport, formatCampaignMetricsOnly } from './reporter.js';
+import { adaptAllStrategies } from './adapter.js';
+import type { GameConfig, Strategy, CampaignResult } from './types.js';
 import { DEFAULT_CONFIG } from './types.js';
 
 // --- Arg Parsing ---
@@ -20,9 +22,11 @@ interface CLIFlags {
   maxExtract: number;
   verbose: boolean;
   fixtures: boolean;
+  runs: number;
 }
 
 const MAX_POOL_SIZE = 100_000;
+const MAX_RUNS = 10;
 
 export function parseAndValidateArgs(args: string[] = process.argv.slice(2)): CLIFlags {
   const { values } = parseArgs({
@@ -34,6 +38,7 @@ export function parseAndValidateArgs(args: string[] = process.argv.slice(2)): CL
       'max-extract':{ type: 'string', default: String(DEFAULT_CONFIG.maxExtractionRate) },
       verbose:      { type: 'boolean', default: false },
       fixtures:     { type: 'boolean', default: false },
+      runs:         { type: 'string', default: '3' },
     },
     strict: true,
   });
@@ -66,25 +71,39 @@ export function parseAndValidateArgs(args: string[] = process.argv.slice(2)): CL
     throw new Error(`Invalid --max-extract value: ${values['max-extract']}. Must be between 0.01 and 1.00.`);
   }
 
+  const runs = Number(values.runs);
+  if (!Number.isInteger(runs) || runs < 1 || runs > MAX_RUNS) {
+    throw new Error(`Invalid --runs value: ${values.runs}. Must be an integer between 1 and ${MAX_RUNS}.`);
+  }
+
+  const fixtures = values.fixtures ?? false;
+
+  // Mutual exclusion: --fixtures and --runs > 1
+  if (fixtures && runs > 1) {
+    throw new Error('--fixtures and --runs are mutually exclusive. Fixture strategies are deterministic and do not adapt.');
+  }
+
   return {
     rounds,
     pool: roundedPool,
     regen,
     maxExtract,
     verbose: values.verbose ?? false,
-    fixtures: values.fixtures ?? false,
+    fixtures,
+    runs,
   };
 }
 
 // --- Display Helpers ---
 
-function printBanner(config: GameConfig, fixturesMode: boolean): void {
+function printBanner(config: GameConfig, fixturesMode: boolean, totalRuns: number): void {
   console.log('');
   console.log('══════════════════════════════════════════════════════════');
   console.log('  Agent 006: Incentive Wargame — Tragedy of the Commons');
   console.log('══════════════════════════════════════════════════════════');
   console.log(`  Pool: ${config.poolSize}  |  Regen: ${(config.regenerationRate * 100).toFixed(0)}%  |  Max Extract: ${(config.maxExtractionRate * 100).toFixed(0)}%`);
-  console.log(`  Rounds: ${config.rounds}  |  Agents: ${config.agentCount}  |  Mode: ${fixturesMode ? 'FIXTURES (deterministic)' : 'CLAUDE (AI-generated)'}`);
+  const mode = fixturesMode ? 'FIXTURES (deterministic)' : totalRuns > 1 ? `CAMPAIGN (${totalRuns} runs)` : 'CLAUDE (AI-generated)';
+  console.log(`  Rounds: ${config.rounds}  |  Agents: ${config.agentCount}  |  Mode: ${mode}`);
   console.log('══════════════════════════════════════════════════════════');
   console.log('');
 }
@@ -142,6 +161,11 @@ function printIncompleteSummaryBox(completedRounds: number, totalRounds: number,
   console.log('└──────────────────────────────────────────────────────┘');
 }
 
+function printCampaignRunSummary(runNumber: number, totalRuns: number, survived: boolean, collapseRound: number | null): void {
+  const status = survived ? 'SURVIVED' : `COLLAPSED (round ${collapseRound})`;
+  console.log(`  ── Run ${runNumber}/${totalRuns}: ${status} ──`);
+}
+
 // --- Main ---
 
 async function main(): Promise<void> {
@@ -161,7 +185,7 @@ async function main(): Promise<void> {
     agentCount: ARCHETYPES.length,
   };
 
-  printBanner(config, flags.fixtures);
+  printBanner(config, flags.fixtures, flags.runs);
 
   // --- Generate or Load Strategies ---
   let strategies: Strategy[];
@@ -208,7 +232,97 @@ async function main(): Promise<void> {
 
   printSubstitutionNotice(substitutions);
 
-  // --- Simulate ---
+  // --- Campaign Mode (multiple runs with adaptation) ---
+  if (flags.runs > 1) {
+    console.log(`  Running campaign (${flags.runs} runs)...`);
+    console.log('');
+
+    const campaignResult = await runCampaign({
+      config,
+      archetypes: ARCHETYPES,
+      initialStrategies: strategies,
+      totalRuns: flags.runs,
+      adaptFn: adaptAllStrategies,
+      onRunStart: (runNumber) => {
+        console.log(`\n  ═══ Run ${runNumber}/${flags.runs} ═══`);
+      },
+      onRound: (_runNumber, result) => {
+        printRoundProgress(result.round, config.rounds, result.poolAfter, result.collapsed, config.poolSize);
+      },
+      onRunEnd: (runNumber, log, metrics) => {
+        const survived = metrics.poolSurvival.survived;
+        printCampaignRunSummary(runNumber, flags.runs, survived, metrics.poolSurvival.collapseRound);
+      },
+      onAdaptStart: (runNumber) => {
+        console.log(`\n  Adapting strategies for Run ${runNumber}...`);
+      },
+      onAdaptEnd: (_runNumber, result) => {
+        const fallbacks = result.results.filter(r => r.usedFallback);
+        if (fallbacks.length > 0) {
+          console.log(`  Adaptation: ${fallbacks.length} agent(s) used fallback — ${fallbacks.map(r => r.archetypeName).join(', ')}`);
+        } else {
+          console.log('  Adaptation: All 7 agents adapted successfully.');
+        }
+      },
+    });
+
+    // --- Campaign Report ---
+    console.log('');
+
+    if (campaignResult.aborted) {
+      console.log(`  CAMPAIGN ABORTED: ${campaignResult.abortReason}`);
+    }
+
+    // Print campaign summary box
+    const anyCollapsed = campaignResult.runs.some(r => r.log.finalState.collapsed);
+    console.log('');
+    console.log('┌──────────────────────────────────────────────────────┐');
+    console.log(`│  CAMPAIGN: ${campaignResult.runs.length} run(s) completed`.padEnd(55) + '│');
+    console.log(`│  Resilience Trend: ${campaignResult.resilienceTrend.trend}`.padEnd(55) + '│');
+    if (campaignResult.adaptationTheater.detected) {
+      console.log('│  Adaptation Theater: DETECTED'.padEnd(55) + '│');
+    }
+    if (campaignResult.archetypeCollapse.detected) {
+      console.log('│  Archetype Collapse: DETECTED'.padEnd(55) + '│');
+    }
+    console.log('└──────────────────────────────────────────────────────┘');
+
+    console.log('');
+
+    if (flags.fixtures && !process.env.ANTHROPIC_API_KEY) {
+      console.log(formatCampaignMetricsOnly(campaignResult));
+      console.log('');
+      console.log('  Note: Report generation skipped (no API key in fixtures mode).');
+    } else {
+      console.log('  Generating campaign analysis report...');
+      try {
+        const reportResult = await generateCampaignReport(campaignResult);
+
+        if (reportResult.metricsOnly) {
+          console.log(`  ${reportResult.error}`);
+          console.log('');
+          console.log(formatCampaignMetricsOnly(campaignResult));
+        } else {
+          console.log('');
+          console.log(reportResult.report);
+        }
+      } catch (err) {
+        console.error(`  Campaign report generation failed — ${(err as Error).message}`);
+        console.log('');
+        console.log(formatCampaignMetricsOnly(campaignResult));
+      }
+    }
+
+    console.log('');
+
+    // Exit codes: 0 = all survived, 1 = any collapsed or aborted
+    if (anyCollapsed || campaignResult.aborted) {
+      process.exit(1);
+    }
+    process.exit(0);
+  }
+
+  // --- Single Run Mode (unchanged from v0.1.0) ---
   console.log('  Running simulation...');
   console.log('');
 

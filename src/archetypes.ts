@@ -22,7 +22,7 @@ export const ARCHETYPES: Archetype[] = [
   {
     index: 3,
     name: 'Forgiver',
-    description: 'Starts cooperative. If any agent extracted above sustainable share last round, extracts max next round as punishment — but returns to cooperation if the round after punishment shows all agents below sustainable share. Tit-for-tat with de-escalation.',
+    description: 'Starts cooperative. If any other agent extracted above sustainable share last round, extracts max next round as punishment — but returns to cooperation if the round after punishment shows all other agents below sustainable share. Excludes own extraction from the check. Tit-for-tat with de-escalation.',
   },
   {
     index: 4,

@@ -91,8 +91,8 @@ function printSubstitutionNotice(substitutions: string[]): void {
   console.log('');
 }
 
-function printRoundProgress(round: number, totalRounds: number, poolAfter: number, collapsed: boolean): void {
-  const bar = Math.max(0, Math.round((poolAfter / 1000) * 30));
+function printRoundProgress(round: number, totalRounds: number, poolAfter: number, collapsed: boolean, poolSize: number): void {
+  const bar = Math.max(0, Math.min(30, Math.round((poolAfter / poolSize) * 30)));
   const barStr = '█'.repeat(bar) + '░'.repeat(30 - bar);
   const status = collapsed ? ' !! COLLAPSED' : '';
   process.stdout.write(`\r  Round ${String(round).padStart(3)}/${totalRounds}  [${barStr}]  pool: ${String(poolAfter).padStart(7)}${status}`);
@@ -190,7 +190,7 @@ async function main(): Promise<void> {
     archetypes: ARCHETYPES,
     strategies,
     onRound: (result) => {
-      printRoundProgress(result.round, config.rounds, result.poolAfter, result.collapsed);
+      printRoundProgress(result.round, config.rounds, result.poolAfter, result.collapsed, config.poolSize);
     },
   });
 
@@ -209,22 +209,30 @@ async function main(): Promise<void> {
     console.log('  Note: Report generation skipped (no API key in fixtures mode).');
   } else {
     console.log('  Generating analysis report...');
-    const reportResult = await generateReport(log, metrics);
+    try {
+      const reportResult = await generateReport(log, metrics);
 
-    if (reportResult.metricsOnly) {
-      console.log(`  ${reportResult.error}`);
+      if (reportResult.metricsOnly) {
+        console.log(`  ${reportResult.error}`);
+        console.log('');
+        console.log(formatMetricsOnly(metrics));
+      } else {
+        console.log('');
+        console.log(reportResult.report);
+      }
+    } catch (err) {
+      console.error(`  Report generation failed — ${(err as Error).message}`);
       console.log('');
       console.log(formatMetricsOnly(metrics));
-    } else {
-      console.log('');
-      console.log(reportResult.report);
     }
   }
 
   console.log('');
 
   // --- Exit Code ---
-  if (log.finalState.collapsed) {
+  // 0 = survived, 1 = collapsed or incomplete, 2 = never ran
+  const incomplete = !log.finalState.collapsed && log.rounds.length < config.rounds;
+  if (log.finalState.collapsed || incomplete) {
     process.exit(1);
   }
   process.exit(0);

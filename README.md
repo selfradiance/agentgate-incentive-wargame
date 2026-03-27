@@ -22,7 +22,7 @@ npx tsx src/cli.ts
 npx tsx src/cli.ts --fixtures
 
 # Custom parameters
-npx tsx src/cli.ts --rounds 100 --pool 5000 --regen 0.05
+npx tsx src/cli.ts --rounds 100 --pool 5000 --regen 0.05 --max-extract 0.30
 
 # Show generated strategy code
 npx tsx src/cli.ts --verbose

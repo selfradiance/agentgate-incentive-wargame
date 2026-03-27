@@ -119,6 +119,9 @@ export async function generateStrategies(
   let failCount = 0;
 
   for (const archetype of archetypes) {
+    // Early abort: stop making API calls if already at failure threshold
+    if (failCount >= 3) break;
+
     let code: string | null = null;
     let validated = false;
 

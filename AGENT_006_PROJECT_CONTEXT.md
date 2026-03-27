@@ -1,7 +1,7 @@
 # Agent 006: Incentive Wargame — Project Context
 
 **Version:** v0.1.0
-**Status:** Building — Step 1 (Project Setup) complete
+**Status:** Building — Steps 1-11 complete, Step 12 (8-round audit) in progress
 **Last updated:** 2026-03-27
 
 ## What This Is
@@ -25,17 +25,17 @@ Agent 006 stress-tests incentive designs by running AI-generated adversarial str
 ## Build Progress
 
 - [x] Step 1: Project setup
-- [ ] Step 2: Types
-- [ ] Step 3: Economy engine
-- [ ] Step 4: Fixture strategies
-- [ ] Step 5: Metrics
-- [ ] Step 6: Sandbox port
-- [ ] Step 7: Simulation runner
-- [ ] Step 8: Permutation invariance test
-- [ ] Step 9: Strategy generator
-- [ ] Step 10: Reporter
-- [ ] Step 11: CLI wiring
-- [ ] Step 12: 8-round Claude Code audit
+- [x] Step 2: Types
+- [x] Step 3: Economy engine
+- [x] Step 4: Fixture strategies
+- [x] Step 5: Metrics
+- [x] Step 6: Sandbox port
+- [x] Step 7: Simulation runner
+- [x] Step 8: Permutation invariance test
+- [x] Step 9: Strategy generator
+- [x] Step 10: Reporter
+- [x] Step 11: CLI wiring
+- [ ] Step 12: 8-round Claude Code audit (rounds 1-7 complete)
 - [ ] Step 13: Codex cold-eyes audit
 - [ ] Step 14: README + project context update + v0.1.0 tag
 

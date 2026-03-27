@@ -38,9 +38,19 @@ export class RoundDispatcher {
         ],
       });
 
+      // Timeout for initial ready signal — must be cleared on success/failure
+      // to prevent stale timeouts from killing subsequently spawned children
+      const readyTimeout = setTimeout(() => {
+        if (!this.ready) {
+          this.child?.kill('SIGKILL');
+          reject(new Error('Child process did not become ready within timeout'));
+        }
+      }, 5000);
+
       const onReady = (msg: unknown) => {
         if (msg && typeof msg === 'object' && (msg as Record<string, unknown>).type === 'ready') {
           this.ready = true;
+          clearTimeout(readyTimeout);
           this.child!.off('message', onReady);
           resolve();
         }
@@ -49,20 +59,15 @@ export class RoundDispatcher {
       this.child.on('message', onReady);
 
       this.child.on('error', (err) => {
-        if (!this.ready) reject(err);
+        if (!this.ready) {
+          clearTimeout(readyTimeout);
+          reject(err);
+        }
       });
 
       this.child.on('exit', () => {
         this.ready = false;
       });
-
-      // Timeout for initial ready signal
-      setTimeout(() => {
-        if (!this.ready) {
-          this.child?.kill('SIGKILL');
-          reject(new Error('Child process did not become ready within timeout'));
-        }
-      }, 5000);
     });
   }
 

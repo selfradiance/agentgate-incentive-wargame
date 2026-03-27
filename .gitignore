@@ -4,3 +4,4 @@ dist/
 *.log
 *.tsbuildinfo
 coverage/
+AGENT_006_PROJECT_CONTEXT.md

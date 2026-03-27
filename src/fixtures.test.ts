@@ -82,28 +82,43 @@ describe('retaliator', () => {
 
 describe('forgiver', () => {
   it('cooperates on round 1', () => {
-    expect(forgiver(makeState({ round: 1 }))).toBeCloseTo(100 / 7);
+    expect(forgiver(makeState({ round: 1, agentIndex: 3 }))).toBeCloseTo(100 / 7);
   });
 
-  it('punishes after over-extraction', () => {
+  it('punishes after other agent over-extraction', () => {
     const share = 100 / 7;
     const state = makeState({
       round: 2,
+      agentIndex: 3,
       allHistory: [[200], [share], [share], [share], [share], [share], [share]],
       poolHistory: [1000],
     });
     expect(forgiver(state)).toBe(200);
   });
 
-  it('forgives when last round was all cooperative', () => {
+  it('forgives when other agents were all cooperative last round', () => {
     // Round 2 pool was 900, so sustainable share at round 2 = 900 * 0.10 / 7 ≈ 12.857
     const round2Share = 900 * 0.10 / 7;
     const state = makeState({
       round: 3,
+      agentIndex: 3,
       allHistory: [[200, round2Share], [round2Share, round2Share], [round2Share, round2Share], [round2Share, round2Share], [round2Share, round2Share], [round2Share, round2Share], [round2Share, round2Share]],
       poolHistory: [1000, 900],
     });
-    // Last round all at or below sustainable share → forgive
+    // Last round all others at or below sustainable share → forgive
+    expect(forgiver(state)).toBeCloseTo(100 / 7);
+  });
+
+  it('ignores own over-extraction when deciding to forgive', () => {
+    // Forgiver (index 3) punished last round, but all OTHER agents cooperated
+    const round2Share = 900 * 0.10 / 7;
+    const state = makeState({
+      round: 3,
+      agentIndex: 3,
+      allHistory: [[round2Share, round2Share], [round2Share, round2Share], [round2Share, round2Share], [round2Share, 200], [round2Share, round2Share], [round2Share, round2Share], [round2Share, round2Share]],
+      poolHistory: [1000, 900],
+    });
+    // Forgiver's own 200 in round 2 should be ignored → forgive
     expect(forgiver(state)).toBeCloseTo(100 / 7);
   });
 });

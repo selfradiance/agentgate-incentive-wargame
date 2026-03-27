@@ -2,7 +2,7 @@
 // Claude API: simulation log + metrics → structured findings report.
 // Fallback to metrics-only on API failure.
 
-import type { SimulationLog, AllMetrics, Strategy } from './types.js';
+import type { SimulationLog, AllMetrics } from './types.js';
 import { getAnthropicClient } from './anthropic-client.js';
 
 const MODEL = 'claude-sonnet-4-20250514';
@@ -45,7 +45,7 @@ function buildReporterInput(log: SimulationLog, metrics: AllMetrics): string {
       'FIRST 5 ROUNDS:',
       ...first5.map(formatRound),
       '',
-      `SUMMARIZED: Rounds 6-${roundsPlayed - 5} omitted. Per-round aggregates:`,
+      `SUMMARIZED: Rounds 6-${roundsPlayed - 5} (per-round aggregates only):`,
       ...log.rounds.slice(5, -5).map(r => {
         const totalExtraction = r.actual.reduce((s, a) => s + a, 0);
         return `  Round ${r.round}: pool ${r.poolBefore} → ${r.poolAfter}, total extraction: ${totalExtraction}`;

@@ -20,17 +20,6 @@ export function retaliator(state: StrategyState): number {
     return Math.min(state.sustainableShare, state.maxExtraction);
   }
 
-  // Check last round for any over-extraction
-  const lastRound = state.allHistory.map(h => h[h.length - 1]);
-  const lastPoolLevel = state.poolHistory[state.poolHistory.length - 1];
-  const lastSustainableShare = lastPoolLevel * state.regenerationRate / state.agentCount;
-
-  for (const extraction of lastRound) {
-    if (extraction > lastSustainableShare) {
-      return state.maxExtraction;
-    }
-  }
-
   // Check all prior rounds — grim trigger is permanent
   for (let r = 0; r < state.allHistory[0].length; r++) {
     const poolAtRound = state.poolHistory[r];
@@ -46,30 +35,30 @@ export function retaliator(state: StrategyState): number {
 }
 
 // 3: Forgiver — tit-for-tat with de-escalation
+// Checks OTHER agents only (excludes self) so its own punishment doesn't block de-escalation
 export function forgiver(state: StrategyState): number {
   if (state.round === 1) {
     return Math.min(state.sustainableShare, state.maxExtraction);
   }
 
-  // Check last round for any over-extraction
-  const lastRound = state.allHistory.map(h => h[h.length - 1]);
+  // Check last round for over-extraction by OTHER agents
   const lastPoolLevel = state.poolHistory[state.poolHistory.length - 1];
   const lastSustainableShare = lastPoolLevel * state.regenerationRate / state.agentCount;
 
-  let anyOverExtracted = false;
-  for (const extraction of lastRound) {
-    if (extraction > lastSustainableShare) {
-      anyOverExtracted = true;
+  let anyOtherOverExtracted = false;
+  for (let a = 0; a < state.agentCount; a++) {
+    if (a === state.agentIndex) continue; // exclude self
+    if (state.allHistory[a][state.allHistory[a].length - 1] > lastSustainableShare) {
+      anyOtherOverExtracted = true;
       break;
     }
   }
 
-  if (anyOverExtracted) {
-    // Punish this round
+  if (anyOtherOverExtracted) {
     return state.maxExtraction;
   }
 
-  // No over-extraction last round → cooperate
+  // No other agent over-extracted last round → cooperate
   return Math.min(state.sustainableShare, state.maxExtraction);
 }
 

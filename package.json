@@ -1,6 +1,6 @@
 {
   "name": "agent-006-incentive-wargame",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Stress-test incentive designs with AI-generated adversarial strategies",
   "type": "module",
   "scripts": {

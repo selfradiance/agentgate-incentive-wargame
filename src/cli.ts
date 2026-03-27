@@ -71,12 +71,16 @@ export function parseAndValidateArgs(args: string[] = process.argv.slice(2)): CL
     throw new Error(`Invalid --max-extract value: ${values['max-extract']}. Must be between 0.01 and 1.00.`);
   }
 
-  const runs = Number(values.runs);
+  const fixtures = values.fixtures ?? false;
+
+  // When --fixtures is specified without explicit --runs, default to 1 run
+  const runsRaw = Number(values.runs);
+  const runsExplicitlySet = args.includes('--runs');
+  const runs = (fixtures && !runsExplicitlySet) ? 1 : runsRaw;
+
   if (!Number.isInteger(runs) || runs < 1 || runs > MAX_RUNS) {
     throw new Error(`Invalid --runs value: ${values.runs}. Must be an integer between 1 and ${MAX_RUNS}.`);
   }
-
-  const fixtures = values.fixtures ?? false;
 
   // Mutual exclusion: --fixtures and --runs > 1
   if (fixtures && runs > 1) {

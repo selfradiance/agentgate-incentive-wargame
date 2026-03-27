@@ -108,10 +108,21 @@ export function buildObservationPacket(
       totalVsMsyRatio: Math.round(totalVsMsy * 10000) / 10000,
     };
 
-    // Truncate arrays to first 5 + last 5 + collapse round
-    const first5 = (arr: any[]) => arr.slice(0, 5);
-    const last5 = (arr: any[]) => arr.slice(-5);
-    const truncate = <T>(arr: T[]): T[] => [...first5(arr), ...last5(arr)];
+    // Determine collapse round index (if it falls in the omitted middle)
+    const collapseIdx = log.finalState.collapseRound !== null
+      ? log.finalState.collapseRound - 1  // 0-indexed
+      : -1;
+    const collapseInMiddle = collapseIdx >= omittedStart && collapseIdx < omittedEnd;
+
+    // Truncate arrays: first 5 + collapse round (if in middle) + last 5
+    const truncate = <T>(arr: T[]): T[] => {
+      const result = [...arr.slice(0, 5)];
+      if (collapseInMiddle) {
+        result.push(arr[collapseIdx]);
+      }
+      result.push(...arr.slice(-5));
+      return result;
+    };
 
     packet.private.wealthPerRound = truncate(packet.private.wealthPerRound);
     packet.private.requestedPerRound = truncate(packet.private.requestedPerRound);
@@ -136,8 +147,10 @@ function buildAdapterPrompt(
   config: GameConfig,
 ): string {
   const priorCollapsed = packet.metrics.collapsed;
-  const wasHeavilyRationed = packet.private.wasRationedPerRound.filter(Boolean).length >
-    packet.roundCount * 0.3;
+  // Use truncated stats when available (avoids comparing truncated array to full roundCount)
+  const wasHeavilyRationed = packet.truncated
+    ? packet.truncated.rationingFrequency > 0.3
+    : packet.private.wasRationedPerRound.filter(Boolean).length > packet.roundCount * 0.3;
 
   const behavioralChangeRequirement = (priorCollapsed || wasHeavilyRationed)
     ? `IMPORTANT: The commons ${priorCollapsed ? 'COLLAPSED' : 'was under severe rationing pressure'} in the prior run. You MUST change at least one decision threshold, conditional branch, or extraction logic based on what you observed. In a code comment at the top of your function, explain in one sentence what you changed and why.`
@@ -160,7 +173,7 @@ function buildAdapterPrompt(
 Your function MUST:
 - Be a pure function with signature: function <name>(state) { ... }
 - Accept a single \`state\` parameter (read-only object)
-- Return a number (the extraction amount in cents)
+- Return a number (the extraction amount)
 - Use NO side effects, NO async, NO globals, NO I/O, NO console, NO require/import
 
 ## State Object

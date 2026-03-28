@@ -231,6 +231,208 @@ export class RoundDispatcher {
     });
   }
 
+  // --- v0.3.0: Economy Module Methods ---
+
+  async loadEconomy(code: string): Promise<{ success: boolean; error?: string }> {
+    if (!this.child || !this.ready) {
+      await this._spawnChild();
+    }
+
+    return new Promise((resolve) => {
+      const requestId = this.nextRequestId++;
+      let settled = false;
+
+      const cleanup = () => {
+        clearTimeout(timeout);
+        this.child?.off('message', onMessage);
+        this.child?.off('exit', onExit);
+      };
+
+      const timeout = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          cleanup();
+          this.child?.kill('SIGKILL');
+          this.child = null;
+          this.ready = false;
+          resolve({ success: false, error: 'Economy load timed out' });
+        }
+      }, ROUND_TIMEOUT_MS);
+
+      const onMessage = (msg: unknown) => {
+        if (settled) return;
+        if (!msg || typeof msg !== 'object') return;
+        const m = msg as Record<string, unknown>;
+        if (m.type !== 'economy_loaded' || m.requestId !== requestId) return;
+
+        settled = true;
+        cleanup();
+        resolve({ success: m.success as boolean, error: m.error as string | undefined });
+      };
+
+      const onExit = () => {
+        if (!settled) {
+          settled = true;
+          cleanup();
+          this.child = null;
+          this.ready = false;
+          resolve({ success: false, error: 'Child process exited during economy load' });
+        }
+      };
+
+      this.child!.on('message', onMessage);
+      this.child!.on('exit', onExit);
+
+      try {
+        this.child!.send({ type: 'load_economy', requestId, code });
+      } catch {
+        settled = true;
+        cleanup();
+        this.child = null;
+        this.ready = false;
+        resolve({ success: false, error: 'Failed to send economy load message' });
+      }
+    });
+  }
+
+  async callEconomyFunction(fnName: string, args: unknown[]): Promise<{ success: boolean; result?: unknown; error?: string }> {
+    if (!this.child || !this.ready) {
+      await this._spawnChild();
+    }
+
+    return new Promise((resolve) => {
+      const requestId = this.nextRequestId++;
+      let settled = false;
+
+      const cleanup = () => {
+        clearTimeout(timeout);
+        this.child?.off('message', onMessage);
+        this.child?.off('exit', onExit);
+      };
+
+      const timeout = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          cleanup();
+          this.child?.kill('SIGKILL');
+          this.child = null;
+          this.ready = false;
+          resolve({ success: false, error: `Economy call ${fnName} timed out` });
+        }
+      }, ROUND_TIMEOUT_MS);
+
+      const onMessage = (msg: unknown) => {
+        if (settled) return;
+        if (!msg || typeof msg !== 'object') return;
+        const m = msg as Record<string, unknown>;
+        if (m.type !== 'economy_call_result' || m.requestId !== requestId) return;
+
+        settled = true;
+        cleanup();
+        resolve({
+          success: m.success as boolean,
+          result: m.result,
+          error: m.error as string | undefined,
+        });
+      };
+
+      const onExit = () => {
+        if (!settled) {
+          settled = true;
+          cleanup();
+          this.child = null;
+          this.ready = false;
+          resolve({ success: false, error: 'Child process exited during economy call' });
+        }
+      };
+
+      this.child!.on('message', onMessage);
+      this.child!.on('exit', onExit);
+
+      try {
+        this.child!.send({ type: 'economy_call', requestId, fnName, args });
+      } catch {
+        settled = true;
+        cleanup();
+        this.child = null;
+        this.ready = false;
+        resolve({ success: false, error: `Failed to send economy call ${fnName}` });
+      }
+    });
+  }
+
+  async executeScenarioStrategies(
+    strategies: string[],
+    observations: Record<string, unknown>[],
+    scenario: Record<string, unknown>,
+  ): Promise<{ decisions: (Record<string, unknown> | { error: string; agentIndex: number })[] }> {
+    if (!this.child || !this.ready) {
+      await this._spawnChild();
+    }
+
+    return new Promise((resolve) => {
+      const requestId = this.nextRequestId++;
+      let settled = false;
+
+      const cleanup = () => {
+        clearTimeout(timeout);
+        this.child?.off('message', onMessage);
+        this.child?.off('exit', onExit);
+      };
+
+      const timeout = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          cleanup();
+          this.child?.kill('SIGKILL');
+          this.child = null;
+          this.ready = false;
+          resolve({
+            decisions: strategies.map((_, i) => ({ error: 'Strategy execution timed out', agentIndex: i })),
+          });
+        }
+      }, ROUND_TIMEOUT_MS);
+
+      const onMessage = (msg: unknown) => {
+        if (settled) return;
+        if (!msg || typeof msg !== 'object') return;
+        const m = msg as Record<string, unknown>;
+        if (m.type !== 'scenario_strategies_result' || m.requestId !== requestId) return;
+
+        settled = true;
+        cleanup();
+        resolve({ decisions: (m.decisions as Record<string, unknown>[]) || [] });
+      };
+
+      const onExit = () => {
+        if (!settled) {
+          settled = true;
+          cleanup();
+          this.child = null;
+          this.ready = false;
+          resolve({
+            decisions: strategies.map((_, i) => ({ error: 'Child crashed during strategy execution', agentIndex: i })),
+          });
+        }
+      };
+
+      this.child!.on('message', onMessage);
+      this.child!.on('exit', onExit);
+
+      try {
+        this.child!.send({ type: 'execute_scenario_strategies', requestId, strategies, observations, scenario });
+      } catch {
+        settled = true;
+        cleanup();
+        this.child = null;
+        this.ready = false;
+        resolve({
+          decisions: strategies.map((_, i) => ({ error: 'Failed to send strategy execution message', agentIndex: i })),
+        });
+      }
+    });
+  }
+
   kill(): void {
     if (this.child) {
       this.child.kill('SIGKILL');

@@ -1,10 +1,13 @@
 // Agent 006: Child Runner
 // Runs inside a permission-restricted child process.
-// Each strategy executes in a fresh vm context with string code generation disabled.
+// Strategy VM: each strategy executes in a fresh vm context with string code generation disabled.
+// Economy VM: generated economy modules run in a persistent vm context with same restrictions.
+// v0.3.0: Two VM contexts — one for economy, one for strategies.
 
 import { Script, createContext } from 'node:vm';
 
 const STRATEGY_TIMEOUT_MS = 250;
+const ECONOMY_TIMEOUT_MS = 500;
 
 const safeProcess = {
   on: process.on.bind(process),
@@ -149,6 +152,89 @@ function isExecuteRoundMessage(msg) {
     && isValidExecuteState(msg.state, msg.strategies.length);
 }
 
+// --- Economy VM Context (v0.3.0) ---
+
+let economyContext = null;
+let economyFunctions = null;
+
+function loadEconomyModule(code) {
+  // Create a persistent VM context for the economy module
+  const ctx = createContext(
+    { exports: {} },
+    { codeGeneration: { strings: false, wasm: false } },
+  );
+
+  // Compile and run the economy module code to populate exports
+  // Replace 'export function X' with 'exports.X = function X' for VM compatibility
+  const moduleCode = code.replace(/export\s+function\s+(\w+)/g, 'exports.$1 = function $1');
+  // Also handle 'export const X = ...'
+  const finalCode = moduleCode.replace(/export\s+const\s+(\w+)/g, 'exports.$1');
+
+  const script = new Script(`'use strict';\n${finalCode}`);
+  script.runInContext(ctx, { timeout: ECONOMY_TIMEOUT_MS });
+
+  // Verify all 6 required exports exist
+  const required = ['initState', 'tick', 'extractMetrics', 'checkInvariants', 'isCollapsed', 'getObservations'];
+  const missing = required.filter(name => typeof ctx.exports[name] !== 'function');
+  if (missing.length > 0) {
+    throw new Error(`Economy module missing exports: ${missing.join(', ')}`);
+  }
+
+  economyContext = ctx;
+  economyFunctions = ctx.exports;
+}
+
+function callEconomyFunction(fnName, args) {
+  if (!economyFunctions || !economyFunctions[fnName]) {
+    throw new Error(`Economy function ${fnName} not loaded`);
+  }
+
+  // Serialize args through JSON to prevent context leakage
+  const safeArgs = JSON.parse(JSON.stringify(args));
+
+  const result = economyFunctions[fnName](...safeArgs);
+
+  // Serialize result through JSON to prevent context leakage
+  return JSON.parse(JSON.stringify(result));
+}
+
+// Execute strategies with observation-based state (scenario mode)
+// Returns AgentDecision objects instead of raw numbers
+function executeScenarioStrategies(strategies, observations, scenario) {
+  const decisions = [];
+
+  for (let i = 0; i < strategies.length; i++) {
+    try {
+      // Build observation state for this agent
+      const obs = observations[i];
+      const stateForAgent = {
+        ...obs,
+        agentIndex: i,
+        agentCount: scenario.agentCount,
+        round: obs._round || 1,
+        totalRounds: obs._totalRounds || 50,
+      };
+
+      // Execute strategy in fresh VM context (same as regular strategies)
+      const result = executeStrategy(strategies[i], stateForAgent);
+
+      // Strategy should return an AgentDecision object: { action: string, params: {} }
+      if (result && typeof result === 'object' && typeof result.action === 'string') {
+        decisions.push(result);
+      } else if (typeof result === 'number') {
+        // Backward compatibility: if strategy returns a number, wrap as extract decision
+        decisions.push({ action: 'extract', params: { amount: result } });
+      } else {
+        decisions.push({ error: 'Strategy did not return a valid decision', agentIndex: i });
+      }
+    } catch (err) {
+      decisions.push({ error: err?.message || String(err), agentIndex: i });
+    }
+  }
+
+  return decisions;
+}
+
 safeProcess.on('message', (msg) => {
   if (isExecuteRoundMessage(msg)) {
     const result = executeRound(msg.strategies, msg.state);
@@ -157,6 +243,66 @@ safeProcess.on('message', (msg) => {
       requestId: msg.requestId,
       extractions: result,
     });
+    return;
+  }
+
+  // v0.3.0: Load economy module
+  if (isPlainObject(msg) && msg.type === 'load_economy' && Number.isInteger(msg.requestId)) {
+    try {
+      loadEconomyModule(msg.code);
+      safeProcess.send?.({
+        type: 'economy_loaded',
+        requestId: msg.requestId,
+        success: true,
+      });
+    } catch (err) {
+      safeProcess.send?.({
+        type: 'economy_loaded',
+        requestId: msg.requestId,
+        success: false,
+        error: err?.message || String(err),
+      });
+    }
+    return;
+  }
+
+  // v0.3.0: Call economy function (initState, tick, extractMetrics, etc.)
+  if (isPlainObject(msg) && msg.type === 'economy_call' && Number.isInteger(msg.requestId)) {
+    try {
+      const result = callEconomyFunction(msg.fnName, msg.args || []);
+      safeProcess.send?.({
+        type: 'economy_call_result',
+        requestId: msg.requestId,
+        success: true,
+        result,
+      });
+    } catch (err) {
+      safeProcess.send?.({
+        type: 'economy_call_result',
+        requestId: msg.requestId,
+        success: false,
+        error: err?.message || String(err),
+      });
+    }
+    return;
+  }
+
+  // v0.3.0: Execute scenario strategies (returns AgentDecision objects)
+  if (isPlainObject(msg) && msg.type === 'execute_scenario_strategies' && Number.isInteger(msg.requestId)) {
+    try {
+      const decisions = executeScenarioStrategies(msg.strategies, msg.observations, msg.scenario);
+      safeProcess.send?.({
+        type: 'scenario_strategies_result',
+        requestId: msg.requestId,
+        decisions,
+      });
+    } catch (err) {
+      safeProcess.send?.({
+        type: 'scenario_strategies_result',
+        requestId: msg.requestId,
+        decisions: msg.strategies.map((_, i) => ({ error: err?.message || String(err), agentIndex: i })),
+      });
+    }
     return;
   }
 

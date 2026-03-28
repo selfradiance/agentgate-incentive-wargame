@@ -1,0 +1,11 @@
+Ultimatum Bargaining
+
+6 agents are paired into 3 proposer-responder pairs each round. Pairs are randomly assigned. A pot of 100 units is available per pair.
+
+Each round, the proposer offers a split by choosing an amount (0 to 100) to give to the responder. The responder simultaneously sets a minimum acceptable offer (0 to 100). If the proposer's offer meets or exceeds the responder's minimum, the deal is accepted: the responder gets the offered amount and the proposer keeps the rest. If the offer is below the minimum, both get nothing for that round.
+
+Roles alternate each round: proposers become responders and vice versa.
+
+If total payouts across all pairs drop below 50 for 5 consecutive rounds, the market has collapsed.
+
+Run for 40 rounds. Each agent can observe their own accumulated wealth and the average acceptance rate from the previous round. They cannot see other agents' individual strategies or thresholds.

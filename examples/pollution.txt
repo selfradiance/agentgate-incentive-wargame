@@ -1,0 +1,9 @@
+Pollution Permits
+
+4 factories share a regional airshed with a pollution capacity of 500 units. Each round, every factory simultaneously chooses a production level between 0 and 100 units. Each unit of production generates 1 unit of pollution but earns the factory 10 coins in revenue.
+
+If total pollution exceeds the 500-unit capacity, every factory pays a penalty of 5 coins per unit of excess pollution (split equally). The airshed absorbs 20% of current pollution each round through natural decay.
+
+Accumulated pollution carries over between rounds. If accumulated pollution exceeds 800 units, an environmental crisis occurs and the simulation ends early.
+
+Run for 50 rounds. Each factory can observe the current accumulated pollution level, their own coin balance, and the total production from the previous round. They cannot see individual production levels of other factories.

@@ -1,0 +1,9 @@
+Public Goods Game
+
+5 agents each start with 100 tokens. Each round, every agent simultaneously decides how many tokens to contribute to a public fund (between 0 and their current balance). The total contributions are multiplied by 1.5 and then divided equally among all 5 agents, regardless of how much each contributed.
+
+Agents keep whatever they did not contribute plus their share of the multiplied public fund.
+
+If the total contribution across all agents drops below 5 tokens for 3 consecutive rounds, the cooperation has collapsed and the simulation ends early.
+
+Run for 30 rounds. Each agent can observe their own balance and the total contributions from the previous round. They cannot see individual contributions from other agents.

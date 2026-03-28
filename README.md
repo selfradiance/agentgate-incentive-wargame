@@ -107,13 +107,13 @@ Strategies execute in a **forked child process** with Node.js `--permission` fla
 
 ## Tests
 
-167 tests across 14 test files. Run with:
+173 tests across 14 test files. Run with:
 
 ```bash
 npm test
 ```
 
-Key test categories: economy engine (13), fixture strategies (22), metrics (24), campaign metrics (23), adapter (5), campaign integration (14), sandbox validator (23), sandbox executor (11), round dispatcher (10), simulation runner (5), strategy generator (6), reporter (6), permutation invariance (1), CLI (4).
+Key test categories: economy engine (13), fixture strategies (22), metrics (25), campaign metrics (25), adapter (5), campaign integration (15), sandbox validator (24), sandbox executor (11), round dispatcher (10), simulation runner (5), strategy generator (6), reporter (6), permutation invariance (1), CLI (5).
 
 ## Audit Trail
 
@@ -124,6 +124,8 @@ Key test categories: economy engine (13), fixture strategies (22), metrics (24),
 | v0.1.0 cold-eyes audit | Codex | Full codebase security + code quality review | Clean pass — 0 critical/high/medium findings |
 | v0.1.0 cross-verification | Claude Code | Security-focused review of final codebase | Clean pass — confirmed sandbox isolation, IPC safety, economy math |
 | v0.2.0 8-round code audit | Claude Code | Adapter, metrics, campaign loop, sandbox, reporter, CLI, docs, deps | 8 rounds + final pass complete; 15 findings fixed, 167 tests green |
+| v0.2.0 cold-eyes audit | Codex | Full codebase security hardening | Re-sandboxed drift/convergence, tightened IPC/state validation, prompt injection defense, input validation; 173 tests green |
+| v0.2.0 cross-verification | Claude Code | Security review of Codex hardening changes | Clean pass — all changes correct and complete |
 
 ## Design Specs
 

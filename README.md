@@ -149,6 +149,8 @@ The extractor will flag ambiguities and resolve them with sensible defaults.
 
 All 4 example specs have been tested against the live Claude API. The pipeline produces meaningful, scenario-specific findings — not generic platitudes. The strongest result came from the public goods game, where the AI independently identified a parameter design flaw: the hardcoded contribution cap breaks the incentive structure at scale, causing 25 invalid decisions and a final-round collapse that the spec writer didn't anticipate.
 
+The ultimatum scenario demonstrated the investigation loop: the first run collapsed after 5 rounds with 0% acceptance rate. Investigation revealed the generated economy had a timing bug — swapping proposer/responder roles before processing decisions. After improving the generator prompt, the re-run completed all 50 rounds with 67% acceptance and genuine game theory dynamics.
+
 ## Archetypes (Commons Mode)
 
 | # | Name | Strategy |

@@ -12,8 +12,15 @@ import { runSimulation, runCampaign } from './runner.js';
 import { computeAllMetrics } from './metrics.js';
 import { generateReport, formatMetricsOnly, generateCampaignReport, formatCampaignMetricsOnly } from './reporter.js';
 import { adaptAllStrategies } from './adapter.js';
+import { extractScenario } from './extractor.js';
+import { generateEconomyModule } from './economy-gen.js';
+import { generateArchetypes } from './archetype-gen.js';
+import { generateScenarioStrategies } from './generator.js';
+import { runScenarioSimulation } from './runner.js';
+import { generateScenarioReport, formatScenarioMetricsOnly } from './reporter.js';
 import type { GameConfig, Strategy, CampaignResult, NormalizedScenario } from './types.js';
 import { DEFAULT_CONFIG } from './types.js';
+import { readFileSync } from 'node:fs';
 
 // --- Arg Parsing ---
 
@@ -25,6 +32,10 @@ interface CLIFlags {
   verbose: boolean;
   fixtures: boolean;
   runs: number;
+  spec: string | null;
+  agents: number | null;
+  yes: boolean;
+  dryRun: boolean;
 }
 
 const MAX_POOL_SIZE = 100_000;
@@ -41,6 +52,10 @@ export function parseAndValidateArgs(args: string[] = process.argv.slice(2)): CL
       verbose:      { type: 'boolean', default: false },
       fixtures:     { type: 'boolean', default: false },
       runs:         { type: 'string', default: '3' },
+      spec:         { type: 'string' },
+      agents:       { type: 'string' },
+      yes:          { type: 'boolean', default: false },
+      'dry-run':    { type: 'boolean', default: false },
     },
     strict: true,
   });
@@ -89,6 +104,26 @@ export function parseAndValidateArgs(args: string[] = process.argv.slice(2)): CL
     throw new Error('--fixtures and --runs are mutually exclusive. Fixture strategies are deterministic and do not adapt.');
   }
 
+  // --spec flag
+  const spec = values.spec ?? null;
+
+  // --agents flag (only valid with --spec)
+  let agents: number | null = null;
+  if (values.agents !== undefined) {
+    if (!spec) {
+      throw new Error('--agents is only valid with --spec');
+    }
+    agents = Number(values.agents);
+    if (!Number.isInteger(agents) || agents < 2 || agents > 20) {
+      throw new Error(`Invalid --agents value: ${values.agents}. Must be an integer between 2 and 20.`);
+    }
+  }
+
+  // --spec and --fixtures are mutually exclusive
+  if (spec && fixtures) {
+    throw new Error('--spec and --fixtures are mutually exclusive.');
+  }
+
   return {
     rounds,
     pool: roundedPool,
@@ -97,6 +132,10 @@ export function parseAndValidateArgs(args: string[] = process.argv.slice(2)): CL
     verbose: values.verbose ?? false,
     fixtures,
     runs,
+    spec,
+    agents,
+    yes: values.yes ?? false,
+    dryRun: values['dry-run'] ?? false,
   };
 }
 
@@ -294,6 +333,210 @@ export async function confirmScenario(
   });
 }
 
+// --- Scenario Mode ---
+
+async function runScenarioMode(flags: CLIFlags): Promise<void> {
+  const specPath = flags.spec!;
+
+  // 1. Read spec file
+  let specText: string;
+  try {
+    specText = readFileSync(specPath, 'utf-8');
+  } catch (err) {
+    console.error(`Error: Cannot read spec file: ${specPath} — ${(err as Error).message}`);
+    process.exit(2);
+  }
+
+  if (!specText.trim()) {
+    console.error('Error: Spec file is empty.');
+    process.exit(2);
+  }
+
+  // 2. Extract scenario via Claude API
+  console.log('');
+  console.log('  Extracting scenario from spec...');
+  let scenario: NormalizedScenario;
+  try {
+    scenario = await extractScenario(specText);
+  } catch (err) {
+    console.error(`Error: Scenario extraction failed — ${(err as Error).message}`);
+    process.exit(2);
+    return; // unreachable, helps TS
+  }
+
+  // 3. Override agentCount if --agents provided
+  if (flags.agents !== null) {
+    scenario = { ...scenario, agentCount: flags.agents };
+  }
+
+  // 4. Verbose: show extracted scenario JSON
+  if (flags.verbose) {
+    console.log('');
+    console.log('── Extracted Scenario JSON ──────────────────────────────');
+    console.log(JSON.stringify(scenario, null, 2));
+    console.log('─────────────────────────────────────────────────────────');
+  }
+
+  // 5. Confirmation gate
+  const confirmed = await confirmScenario(scenario, { autoYes: flags.yes });
+  if (!confirmed) {
+    console.log('  Scenario rejected. Exiting.');
+    process.exit(0);
+  }
+
+  // 6. Generate economy module
+  console.log('  Generating economy module...');
+  let economyCode: string;
+  try {
+    economyCode = await generateEconomyModule(scenario);
+  } catch (err) {
+    console.error(`Error: Economy generation failed — ${(err as Error).message}`);
+    process.exit(2);
+    return;
+  }
+  console.log('  Economy module generated.');
+
+  if (flags.verbose) {
+    console.log('');
+    console.log('── Generated Economy Code ──────────────────────────────');
+    console.log(economyCode);
+    console.log('─────────────────────────────────────────────────────────');
+  }
+
+  // 7. Generate archetypes
+  console.log('  Generating archetypes...');
+  let archetypes: import('./types.js').Archetype[];
+  try {
+    archetypes = await generateArchetypes(scenario);
+  } catch (err) {
+    console.error(`Error: Archetype generation failed — ${(err as Error).message}`);
+    process.exit(2);
+    return;
+  }
+  console.log(`  ${archetypes.length} archetypes generated.`);
+
+  // 8. Dry run: print results and stop
+  if (flags.dryRun) {
+    console.log('');
+    console.log('  ── DRY RUN: Stopping before strategy generation ──');
+    console.log('');
+    console.log('  Archetypes:');
+    for (const a of archetypes) {
+      console.log(`    ${a.index}. ${a.name} — ${a.description}`);
+    }
+    console.log('');
+    process.exit(0);
+  }
+
+  // 9. Generate strategies
+  console.log('  Generating strategies...');
+  let strategies: Strategy[];
+  let substitutions: string[] = [];
+  try {
+    const genResult = await generateScenarioStrategies(archetypes, scenario);
+    strategies = genResult.strategies;
+    substitutions = genResult.substitutions;
+
+    if (genResult.errors.length > 0) {
+      for (const err of genResult.errors) {
+        console.error(`  [gen] ${err}`);
+      }
+    }
+
+    console.log('  Strategies generated.');
+  } catch (err) {
+    console.error(`Error: Strategy generation failed — ${(err as Error).message}`);
+    process.exit(2);
+    return;
+  }
+
+  if (flags.verbose) {
+    console.log('');
+    console.log('── Generated Strategy Code ──────────────────────────────');
+    for (const s of strategies) {
+      console.log(`\n[${s.archetypeName}]${s.isFallback ? ' (FALLBACK)' : ''}`);
+      console.log(s.code);
+    }
+    console.log('─────────────────────────────────────────────────────────');
+  }
+
+  if (substitutions.length > 0) {
+    printSubstitutionNotice(substitutions);
+  }
+
+  // 10. Run simulation
+  console.log('');
+  console.log('══════════════════════════════════════════════════════════');
+  console.log(`  ${scenario.name}`);
+  console.log('══════════════════════════════════════════════════════════');
+  console.log(`  Agents: ${scenario.agentCount}  |  Rounds: ${flags.rounds}  |  Mode: SCENARIO`);
+  console.log('══════════════════════════════════════════════════════════');
+  console.log('');
+  console.log('  Running simulation...');
+  console.log('');
+
+  const result = await runScenarioSimulation({
+    scenario,
+    economyCode,
+    archetypes,
+    strategies,
+    rounds: flags.rounds,
+    onRound: (round, _state, metrics) => {
+      // Simple progress indicator
+      const pct = Math.round((round / flags.rounds) * 100);
+      process.stdout.write(`\r  Round ${String(round).padStart(3)}/${flags.rounds}  [${pct}%]`);
+      if (round === flags.rounds) console.log('');
+    },
+  });
+
+  // 11. Print result summary
+  console.log('');
+  console.log('┌──────────────────────────────────────────────────────┐');
+  if (result.collapsed) {
+    console.log(`│  RESULT: COLLAPSED (round ${result.collapseRound}) ✗`.padEnd(55) + '│');
+  } else {
+    console.log(`│  RESULT: SURVIVED ${result.rounds} rounds ✓`.padEnd(55) + '│');
+  }
+  if (result.hardViolations.length > 0) {
+    console.log(`│  Hard Violations: ${result.hardViolations.length}`.padEnd(55) + '│');
+  }
+  if (result.softViolations.length > 0) {
+    console.log(`│  Soft Violations: ${result.softViolations.length}`.padEnd(55) + '│');
+  }
+  if (result.invalidDecisions.length > 0) {
+    console.log(`│  Invalid Decisions: ${result.invalidDecisions.length}`.padEnd(55) + '│');
+  }
+  console.log('└──────────────────────────────────────────────────────┘');
+
+  // 12. Generate report
+  console.log('');
+  console.log('  Generating analysis report...');
+  try {
+    const reportResult = await generateScenarioReport(scenario, archetypes, result);
+
+    if (reportResult.metricsOnly) {
+      console.log(`  ${reportResult.error}`);
+      console.log('');
+      console.log(formatScenarioMetricsOnly(scenario, result));
+    } else {
+      console.log('');
+      console.log(reportResult.report);
+    }
+  } catch (err) {
+    console.error(`  Report generation failed — ${(err as Error).message}`);
+    console.log('');
+    console.log(formatScenarioMetricsOnly(scenario, result));
+  }
+
+  console.log('');
+
+  // 13. Exit code: 0 = survived, 1 = collapsed or hard violations
+  if (result.collapsed || result.hardViolations.length > 0) {
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
 // --- Main ---
 
 async function main(): Promise<void> {
@@ -305,6 +548,13 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
+  // --- Scenario Mode (--spec) ---
+  if (flags.spec) {
+    await runScenarioMode(flags);
+    return;
+  }
+
+  // --- Commons Mode (default) ---
   const config: GameConfig = {
     poolSize: flags.pool,
     regenerationRate: flags.regen,

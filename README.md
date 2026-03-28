@@ -145,6 +145,10 @@ A good spec includes:
 
 The extractor will flag ambiguities and resolve them with sensible defaults.
 
+## Example Results
+
+All 4 example specs have been tested against the live Claude API. The pipeline produces meaningful, scenario-specific findings — not generic platitudes. The strongest result came from the public goods game, where the AI independently identified a parameter design flaw: the hardcoded contribution cap breaks the incentive structure at scale, causing 25 invalid decisions and a final-round collapse that the spec writer didn't anticipate.
+
 ## Archetypes (Commons Mode)
 
 | # | Name | Strategy |
@@ -214,7 +218,7 @@ Data crosses the VM boundary via **JSON serialization** — no object references
 
 ## Tests
 
-287 tests across 20 test files. Run with:
+301 tests across 20 test files. Run with:
 
 ```bash
 npm test
@@ -233,6 +237,9 @@ Key test categories: extractor validation (28), sandbox validator (45), CLI + sc
 | v0.2.0 8-round code audit | Claude Code | Adapter, metrics, campaign loop, sandbox, reporter, CLI, docs, deps | 8 rounds + final pass complete; 15 findings fixed, 167 tests green |
 | v0.2.0 cold-eyes audit | Codex | Full codebase security hardening | Re-sandboxed drift/convergence, tightened IPC/state validation, prompt injection defense, input validation; 173 tests green |
 | v0.2.0 cross-verification | Claude Code | Security review of Codex hardening changes | Clean pass — all changes correct and complete |
+| v0.3.0 8-round code audit | Claude Code | Logic, security, sandbox, prompts, CLI, scenario pipeline | 13 findings fixed, 3 low accepted; 287 tests green |
+| v0.3.0 cold-eyes audit | Codex | Full codebase security + code quality review | 14 findings fixed (+14 tests); 301 tests green |
+| v0.3.0 cross-verification | Claude Code | Cross-verify all Codex changes | 7 findings fixed (3 medium, 4 low), 4 low accepted; 301 tests green; clean pass |
 
 ## Design Specs
 

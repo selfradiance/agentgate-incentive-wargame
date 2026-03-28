@@ -1,8 +1,10 @@
 // Agent 006: CLI — Entry point, arg parsing + validation, orchestration
 // v0.2.0: Adds --runs flag for campaign mode with strategy adaptation.
+// v0.3.0: Adds --spec, --agents, --yes, --dry-run for user-defined scenarios.
 
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
+import { createInterface } from 'node:readline';
 import { ARCHETYPES } from './archetypes.js';
 import { FIXTURE_STRATEGIES } from './fixtures.js';
 import { generateStrategies } from './generator.js';
@@ -10,7 +12,7 @@ import { runSimulation, runCampaign } from './runner.js';
 import { computeAllMetrics } from './metrics.js';
 import { generateReport, formatMetricsOnly, generateCampaignReport, formatCampaignMetricsOnly } from './reporter.js';
 import { adaptAllStrategies } from './adapter.js';
-import type { GameConfig, Strategy, CampaignResult } from './types.js';
+import type { GameConfig, Strategy, CampaignResult, NormalizedScenario } from './types.js';
 import { DEFAULT_CONFIG } from './types.js';
 
 // --- Arg Parsing ---
@@ -180,6 +182,116 @@ function printCampaignRunSummary(
       ? 'SURVIVED'
       : `COLLAPSED (round ${collapseRound})`;
   console.log(`  ── Run ${runNumber}/${totalRuns}: ${status} ──`);
+}
+
+// --- Scenario Confirmation Gate ---
+
+export function formatScenarioSummary(scenario: NormalizedScenario): string {
+  const lines: string[] = [];
+
+  lines.push('');
+  lines.push('══════════════════════════════════════════════════════════');
+  lines.push('  Extracted Scenario Summary');
+  lines.push('══════════════════════════════════════════════════════════');
+  lines.push(`  Name: ${scenario.name}`);
+  lines.push(`  Description: ${scenario.description}`);
+  lines.push(`  Agents: ${scenario.agentCount}`);
+  lines.push(`  Scenario Class: ${scenario.scenarioClass}`);
+  lines.push('');
+
+  if (scenario.roles.length > 0) {
+    lines.push('  Roles:');
+    for (const role of scenario.roles) {
+      lines.push(`    • ${role.name} — ${role.description}`);
+    }
+    lines.push('');
+  }
+
+  if (scenario.resources.length > 0) {
+    lines.push('  Resources:');
+    for (const res of scenario.resources) {
+      const bounds = [
+        res.min !== undefined ? `min: ${res.min}` : '',
+        res.max !== undefined ? `max: ${res.max}` : '',
+      ].filter(Boolean).join(', ');
+      lines.push(`    • ${res.name} (initial: ${res.initialValue}${bounds ? ', ' + bounds : ''}) — ${res.description}`);
+    }
+    lines.push('');
+  }
+
+  lines.push('  Actions:');
+  for (const action of scenario.actions) {
+    const roleNote = action.allowedRoles.length > 0
+      ? ` [roles: ${action.allowedRoles.join(', ')}]`
+      : '';
+    lines.push(`    • ${action.name}${roleNote} — ${action.description}`);
+    for (const param of action.params) {
+      const range = param.type === 'number' && (param.min !== undefined || param.max !== undefined)
+        ? ` [${param.min ?? '?'}..${param.max ?? '?'}]`
+        : '';
+      lines.push(`        ${param.name}: ${param.type}${range} — ${param.description}`);
+    }
+  }
+  lines.push('');
+
+  lines.push('  Observations:');
+  for (const obs of scenario.observationModel) {
+    lines.push(`    • ${obs.name}: ${obs.type} (${obs.visibility}) — ${obs.description}`);
+  }
+  lines.push('');
+
+  if (scenario.rules.length > 0) {
+    lines.push('  Rules:');
+    for (const rule of scenario.rules) {
+      lines.push(`    [${rule.type.toUpperCase()}] ${rule.description}`);
+    }
+    lines.push('');
+  }
+
+  lines.push(`  Collapse: ${scenario.collapseCondition}`);
+  lines.push(`  Success: ${scenario.successCondition}`);
+
+  if (scenario.ambiguities.length > 0) {
+    lines.push('');
+    lines.push('  ⚠ Ambiguities:');
+    for (const amb of scenario.ambiguities) {
+      const severityMarker = amb.severity === 'high' ? '🔴' : amb.severity === 'medium' ? '🟡' : '🟢';
+      lines.push(`    ${severityMarker} [${amb.severity.toUpperCase()}] ${amb.field}: ${amb.description}`);
+      lines.push(`       Resolution: ${amb.resolution}`);
+    }
+  }
+
+  lines.push('══════════════════════════════════════════════════════════');
+  lines.push('');
+
+  return lines.join('\n');
+}
+
+export async function confirmScenario(
+  scenario: NormalizedScenario,
+  opts: { autoYes?: boolean; input?: NodeJS.ReadableStream; output?: NodeJS.WritableStream } = {},
+): Promise<boolean> {
+  const summary = formatScenarioSummary(scenario);
+  const output = opts.output ?? process.stdout;
+  output.write(summary);
+
+  if (opts.autoYes) {
+    output.write('  Auto-confirmed (--yes)\n');
+    return true;
+  }
+
+  const rl = createInterface({
+    input: opts.input ?? process.stdin,
+    output,
+  });
+
+  return new Promise<boolean>((resolve) => {
+    rl.question('  Proceed with this scenario? (y/n): ', (answer) => {
+      rl.close();
+      const yes = answer.trim().toLowerCase() === 'y' || answer.trim().toLowerCase() === 'yes';
+      resolve(yes);
+    });
+  });
 }
 
 // --- Main ---

@@ -277,3 +277,106 @@ export interface CampaignResult {
   aborted: boolean;
   abortReason?: string;
 }
+
+// --- v0.3.0: Scenario Types ---
+
+// Parameter definition for an action
+export interface ActionParam {
+  name: string;                     // e.g. "amount", "target"
+  type: 'number' | 'string' | 'boolean';
+  min?: number;                     // For numeric params
+  max?: number;                     // For numeric params
+  description: string;
+}
+
+// Action definition — one kind of move an agent can make
+export interface ActionDef {
+  name: string;                     // e.g. "extract", "contribute", "vote"
+  description: string;
+  params: ActionParam[];
+  allowedRoles: string[];           // Which roles can perform this action (empty = all)
+}
+
+// Observation field definition — one piece of data agents can see
+export interface ObservationField {
+  name: string;                     // e.g. "poolLevel", "myWealth"
+  type: 'number' | 'string' | 'boolean' | 'number[]' | 'string[]';
+  visibility: 'public' | 'private';  // public = all agents see, private = only the agent itself
+  description: string;
+}
+
+// An ambiguity detected during spec extraction
+export interface Ambiguity {
+  field: string;                    // Which part of the spec is ambiguous
+  description: string;              // What's ambiguous
+  severity: 'low' | 'medium' | 'high';
+  resolution: string;               // How the extractor resolved it
+}
+
+// A role that agents can be assigned
+export interface Role {
+  name: string;                     // e.g. "harvester", "regulator"
+  description: string;
+}
+
+// A shared resource in the scenario
+export interface Resource {
+  name: string;                     // e.g. "commons_pool", "bonus_fund"
+  description: string;
+  initialValue: number;
+  min?: number;                     // Floor value (default 0)
+  max?: number;                     // Ceiling value
+}
+
+// A rule / invariant that the economy must enforce
+export interface Rule {
+  description: string;
+  type: 'hard' | 'soft';           // hard = abort on violation, soft = log + continue
+}
+
+// The normalized scenario extracted from a raw spec
+export interface NormalizedScenario {
+  name: string;
+  description: string;
+  agentCount: number;
+  roles: Role[];
+  resources: Resource[];
+  actions: ActionDef[];
+  observationModel: ObservationField[];
+  rules: Rule[];
+  ambiguities: Ambiguity[];
+  collapseCondition: string;        // Natural-language description of when the scenario ends
+  successCondition: string;         // Natural-language description of what "survival" means
+  scenarioClass: 'single-action-simultaneous'; // Only supported class in v0.3.0
+}
+
+// Agent's decision each round — the strategy output contract for scenario mode
+export interface AgentDecision {
+  action: string;                   // Must match an ActionDef.name
+  params: Record<string, number | string | boolean>;
+}
+
+// Generated economy module interface — what the economy generator must produce
+export interface GeneratedEconomy {
+  initState: (scenario: NormalizedScenario) => Record<string, unknown>;
+  tick: (
+    state: Record<string, unknown>,
+    decisions: AgentDecision[],
+    scenario: NormalizedScenario,
+  ) => Record<string, unknown>;
+  extractMetrics: (state: Record<string, unknown>, scenario: NormalizedScenario) => Record<string, number>;
+  checkInvariants: (state: Record<string, unknown>, scenario: NormalizedScenario) => string[];
+  isCollapsed: (state: Record<string, unknown>, scenario: NormalizedScenario) => boolean;
+  getObservations: (
+    state: Record<string, unknown>,
+    agentIndex: number,
+    scenario: NormalizedScenario,
+  ) => Record<string, unknown>;
+}
+
+// Hard invariant violation — checked parent-side, not by generated code
+export interface HardInvariantViolation {
+  round: number;
+  type: 'nan-detected' | 'missing-field' | 'wrong-agent-count' | 'type-mismatch';
+  details: string;
+}

@@ -28,6 +28,10 @@ function isErrorExtraction(
     && (value as { agentIndex?: unknown }).agentIndex === expectedAgentIndex;
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
 function isValidRoundResultMessage(
   msg: unknown,
   requestId: number,
@@ -42,6 +46,26 @@ function isValidRoundResultMessage(
     && (msg as { extractions: unknown[] }).extractions.every((value, index) =>
       (typeof value === 'number' && Number.isFinite(value)) || isErrorExtraction(value, index)
     );
+}
+
+function isValidScenarioDecision(
+  value: unknown,
+  expectedAgentIndex: number,
+): value is Record<string, unknown> | { error: string; agentIndex: number } {
+  return isErrorExtraction(value, expectedAgentIndex) || isPlainObject(value);
+}
+
+function isValidScenarioStrategiesResultMessage(
+  msg: unknown,
+  requestId: number,
+  expectedLength: number,
+): msg is { type: 'scenario_strategies_result'; requestId: number; decisions: Record<string, unknown>[] } {
+  return isPlainObject(msg)
+    && msg.type === 'scenario_strategies_result'
+    && msg.requestId === requestId
+    && Array.isArray(msg.decisions)
+    && msg.decisions.length === expectedLength
+    && msg.decisions.every((value, index) => isValidScenarioDecision(value, index));
 }
 
 export class RoundDispatcher {
@@ -265,9 +289,22 @@ export class RoundDispatcher {
         const m = msg as Record<string, unknown>;
         if (m.type !== 'economy_loaded' || m.requestId !== requestId) return;
 
+        if (typeof m.success !== 'boolean') {
+          settled = true;
+          cleanup();
+          resolve({ success: false, error: 'Malformed economy_loaded response: success is not boolean' });
+          return;
+        }
+        if (m.error !== undefined && typeof m.error !== 'string') {
+          settled = true;
+          cleanup();
+          resolve({ success: false, error: 'Malformed economy_loaded response: error is not string' });
+          return;
+        }
+
         settled = true;
         cleanup();
-        resolve({ success: m.success as boolean, error: m.error as string | undefined });
+        resolve({ success: m.success, error: m.error as string | undefined });
       };
 
       const onExit = () => {
@@ -327,10 +364,23 @@ export class RoundDispatcher {
         const m = msg as Record<string, unknown>;
         if (m.type !== 'economy_call_result' || m.requestId !== requestId) return;
 
+        if (typeof m.success !== 'boolean') {
+          settled = true;
+          cleanup();
+          resolve({ success: false, error: 'Malformed economy_call_result: success is not boolean' });
+          return;
+        }
+        if (m.error !== undefined && typeof m.error !== 'string') {
+          settled = true;
+          cleanup();
+          resolve({ success: false, error: 'Malformed economy_call_result: error is not string' });
+          return;
+        }
+
         settled = true;
         cleanup();
         resolve({
-          success: m.success as boolean,
+          success: m.success,
           result: m.result,
           error: m.error as string | undefined,
         });
@@ -396,12 +446,26 @@ export class RoundDispatcher {
       const onMessage = (msg: unknown) => {
         if (settled) return;
         if (!msg || typeof msg !== 'object') return;
-        const m = msg as Record<string, unknown>;
-        if (m.type !== 'scenario_strategies_result' || m.requestId !== requestId) return;
+        if (!isValidScenarioStrategiesResultMessage(msg, requestId, strategies.length)) {
+          const m = msg as Record<string, unknown>;
+          if (m.type !== 'scenario_strategies_result' || m.requestId !== requestId) {
+            return;
+          }
+
+          settled = true;
+          cleanup();
+          this.child?.kill('SIGKILL');
+          this.child = null;
+          this.ready = false;
+          resolve({
+            decisions: strategies.map((_, i) => ({ error: 'Malformed strategy execution response', agentIndex: i })),
+          });
+          return;
+        }
 
         settled = true;
         cleanup();
-        resolve({ decisions: (m.decisions as Record<string, unknown>[]) || [] });
+        resolve({ decisions: msg.decisions });
       };
 
       const onExit = () => {

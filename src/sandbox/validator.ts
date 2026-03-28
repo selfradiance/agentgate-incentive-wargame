@@ -2,10 +2,10 @@
 // String-level code checks adapted for economy mode (pure-function contract).
 // Economy module validation: checks required exports, blocks mutable module scope.
 // Decision validation: checks action names, param types, ranges, role permissions.
-// Structural lint — not a semantic guarantee. Runtime normalization is the safety net.
+// Structural lint — not a semantic guarantee. Runtime checks remain the safety net.
 
 import { Script } from 'node:vm';
-import type { ActionDef, AgentDecision, NormalizedScenario } from '../types.js';
+import type { NormalizedScenario } from '../types.js';
 
 export interface ValidationResult {
   valid: boolean;
@@ -42,13 +42,13 @@ const BLOCKED_PATTERNS: [RegExp, string][] = [
   [/\bexport\b/, 'export not allowed'],
 
   // No eval/code generation
-  [/\beval\s*\(/, 'eval not allowed'],
-  [/\bFunction\s*\(/, 'Function constructor not allowed'],
+  [/\beval\b/, 'eval not allowed'],
+  [/\bFunction\b/, 'Function constructor not allowed'],
 
   // No I/O
   [/\bfetch\s*\(/, 'fetch not allowed'],
   [/\bXMLHttpRequest\b/, 'XMLHttpRequest not allowed'],
-  [/\bconsole\./, 'console access not allowed'],
+  [/\bconsole\b/, 'console access not allowed'],
   [/\bfs\b/, 'fs access not allowed'],
   [/\bchild_process\b/, 'child_process not allowed'],
   [/\bnet\b\./, 'net access not allowed'],
@@ -77,6 +77,111 @@ const RAW_BLOCKED_PATTERNS: [RegExp, string][] = [
   [/\[[^\]]*['"][^'"\]]*['"]\s*\+\s*['"][^'"\]]*['"][^\]]*\]/, 'string-concatenated property access not allowed'],
 ];
 
+function findMatchingBraceEnd(code: string, openingBraceIndex: number): number {
+  let depth = 1;
+  let inSingle = false;
+  let inDouble = false;
+  let inTemplate = false;
+  let inLineComment = false;
+  let inBlockComment = false;
+  let escaped = false;
+
+  for (let i = openingBraceIndex + 1; i < code.length; i++) {
+    const ch = code[i];
+    const next = code[i + 1];
+
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+
+    if (inBlockComment) {
+      if (ch === '*' && next === '/') {
+        inBlockComment = false;
+        i++;
+      }
+      continue;
+    }
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (inSingle) {
+      if (ch === '\\') escaped = true;
+      else if (ch === '\'') inSingle = false;
+      continue;
+    }
+
+    if (inDouble) {
+      if (ch === '\\') escaped = true;
+      else if (ch === '"') inDouble = false;
+      continue;
+    }
+
+    if (inTemplate) {
+      if (ch === '\\') escaped = true;
+      else if (ch === '`') inTemplate = false;
+      continue;
+    }
+
+    if (ch === '/' && next === '/') {
+      inLineComment = true;
+      i++;
+      continue;
+    }
+
+    if (ch === '/' && next === '*') {
+      inBlockComment = true;
+      i++;
+      continue;
+    }
+
+    if (ch === '\'') {
+      inSingle = true;
+      continue;
+    }
+
+    if (ch === '"') {
+      inDouble = true;
+      continue;
+    }
+
+    if (ch === '`') {
+      inTemplate = true;
+      continue;
+    }
+
+    if (ch === '{') {
+      depth++;
+      continue;
+    }
+
+    if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        return i;
+      }
+    }
+  }
+
+  return -1;
+}
+
+function isExactlyOneStrategyFunction(code: string): boolean {
+  const signature = /^function\s+\w+\s*\(\s*state\s*\)\s*\{/u.exec(code);
+  if (!signature) return false;
+
+  const openingBraceIndex = code.indexOf('{', signature.index);
+  if (openingBraceIndex < 0) return false;
+
+  const closingBraceIndex = findMatchingBraceEnd(code, openingBraceIndex);
+  if (closingBraceIndex < 0) return false;
+
+  return code.slice(closingBraceIndex + 1).trim().length === 0;
+}
+
 export function validateStrategy(code: string): ValidationResult {
   const errors: string[] = [];
   const trimmed = code.trim();
@@ -93,8 +198,12 @@ export function validateStrategy(code: string): ValidationResult {
   }
 
   try {
-    new Script(`(${trimmed})`);
+    new Script(trimmed);
   } catch {
+    errors.push('Strategy must be exactly one function declaration with no extra top-level code');
+  }
+
+  if (!isExactlyOneStrategyFunction(trimmed)) {
     errors.push('Strategy must be exactly one function declaration with no extra top-level code');
   }
 
@@ -238,8 +347,10 @@ export function validateDecision(
   }
 
   // Check role permissions
-  if (actionDef.allowedRoles.length > 0 && agentRole) {
-    if (!actionDef.allowedRoles.includes(agentRole)) {
+  if (actionDef.allowedRoles.length > 0) {
+    if (!agentRole) {
+      errors.push(`Action "${d.action}" requires an agent role, but none was provided for agent ${agentIndex}`);
+    } else if (!actionDef.allowedRoles.includes(agentRole)) {
       errors.push(`Agent ${agentIndex} (role: ${agentRole}) is not allowed to perform action "${d.action}". Allowed roles: ${actionDef.allowedRoles.join(', ')}`);
     }
   }
@@ -251,6 +362,12 @@ export function validateDecision(
   }
 
   const params = d.params as Record<string, unknown>;
+
+  for (const key of Object.keys(params)) {
+    if (!actionDef.params.some(param => param.name === key)) {
+      errors.push(`Unexpected param "${key}" for action "${actionDef.name}"`);
+    }
+  }
 
   for (const paramDef of actionDef.params) {
     const val = params[paramDef.name];

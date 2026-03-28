@@ -40,6 +40,7 @@ interface CLIFlags {
 
 const MAX_POOL_SIZE = 100_000;
 const MAX_RUNS = 10;
+const MAX_SPEC_BYTES = 50 * 1024;
 
 export function parseAndValidateArgs(args: string[] = process.argv.slice(2)): CLIFlags {
   const { values } = parseArgs({
@@ -106,6 +107,9 @@ export function parseAndValidateArgs(args: string[] = process.argv.slice(2)): CL
 
   // --spec flag
   const spec = values.spec ?? null;
+  if (spec !== null && spec.trim().length === 0) {
+    throw new Error('--spec must be a non-empty file path.');
+  }
 
   // --agents flag (only valid with --spec)
   let agents: number | null = null;
@@ -349,6 +353,10 @@ async function runScenarioMode(flags: CLIFlags): Promise<void> {
 
   if (!specText.trim()) {
     console.error('Error: Spec file is empty.');
+    process.exit(2);
+  }
+  if (Buffer.byteLength(specText, 'utf-8') > MAX_SPEC_BYTES) {
+    console.error(`Error: Spec file exceeds ${MAX_SPEC_BYTES} bytes.`);
     process.exit(2);
   }
 

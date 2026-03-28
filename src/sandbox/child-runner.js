@@ -1,7 +1,7 @@
 // Agent 006: Child Runner
 // Runs inside a permission-restricted child process.
 // Strategy VM: each strategy executes in a fresh vm context with string code generation disabled.
-// Economy VM: generated economy modules run in a persistent vm context with same restrictions.
+// Economy VM: generated economy modules are evaluated in a fresh vm context per call.
 // v0.3.0: Two VM contexts — one for economy, one for strategies.
 
 import { Script, createContext } from 'node:vm';
@@ -14,7 +14,31 @@ const safeProcess = {
   send: process.send ? process.send.bind(process) : null,
 };
 
-for (const name of ['process', 'fetch', 'XMLHttpRequest', 'WebSocket']) {
+const SANDBOX_GLOBAL_NAMES = [
+  'process',
+  'fetch',
+  'XMLHttpRequest',
+  'WebSocket',
+  'console',
+  'setTimeout',
+  'setInterval',
+  'setImmediate',
+  'Function',
+  'eval',
+  'Promise',
+  'Date',
+  'performance',
+  'crypto',
+  'Proxy',
+  'Reflect',
+  'Symbol',
+  'WeakRef',
+  'FinalizationRegistry',
+  'SharedArrayBuffer',
+  'Atomics',
+];
+
+for (const name of SANDBOX_GLOBAL_NAMES) {
   try {
     globalThis[name] = undefined;
   } catch {
@@ -23,6 +47,15 @@ for (const name of ['process', 'fetch', 'XMLHttpRequest', 'WebSocket']) {
 }
 
 const SCRIPT_CACHE = new Map();
+const REQUIRED_ECONOMY_EXPORTS = ['initState', 'tick', 'extractMetrics', 'checkInvariants', 'isCollapsed', 'getObservations'];
+
+function createSandboxGlobals(extra = {}) {
+  const globals = { ...extra };
+  for (const name of SANDBOX_GLOBAL_NAMES) {
+    globals[name] = undefined;
+  }
+  return globals;
+}
 
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype;
@@ -56,9 +89,114 @@ function deepFreeze(obj) {
   return obj;
 }
 
+function serializeAcrossBoundary(value, label) {
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch (err) {
+    throw new Error(`${label} is not JSON-serializable: ${err?.message || String(err)}`);
+  }
+}
+
+function findMatchingBraceEnd(code, openingBraceIndex) {
+  let depth = 1;
+  let inSingle = false;
+  let inDouble = false;
+  let inTemplate = false;
+  let inLineComment = false;
+  let inBlockComment = false;
+  let escaped = false;
+
+  for (let i = openingBraceIndex + 1; i < code.length; i++) {
+    const ch = code[i];
+    const next = code[i + 1];
+
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (inBlockComment) {
+      if (ch === '*' && next === '/') {
+        inBlockComment = false;
+        i++;
+      }
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (inSingle) {
+      if (ch === '\\') escaped = true;
+      else if (ch === '\'') inSingle = false;
+      continue;
+    }
+    if (inDouble) {
+      if (ch === '\\') escaped = true;
+      else if (ch === '"') inDouble = false;
+      continue;
+    }
+    if (inTemplate) {
+      if (ch === '\\') escaped = true;
+      else if (ch === '`') inTemplate = false;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      inLineComment = true;
+      i++;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      inBlockComment = true;
+      i++;
+      continue;
+    }
+    if (ch === '\'') {
+      inSingle = true;
+      continue;
+    }
+    if (ch === '"') {
+      inDouble = true;
+      continue;
+    }
+    if (ch === '`') {
+      inTemplate = true;
+      continue;
+    }
+    if (ch === '{') {
+      depth++;
+      continue;
+    }
+    if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        return i;
+      }
+    }
+  }
+
+  return -1;
+}
+
+function isExactlyOneStrategyFunction(code) {
+  const signature = /^function\s+\w+\s*\(\s*state\s*\)\s*\{/u.exec(code);
+  if (!signature) return false;
+
+  const openingBraceIndex = code.indexOf('{', signature.index);
+  if (openingBraceIndex < 0) return false;
+
+  const closingBraceIndex = findMatchingBraceEnd(code, openingBraceIndex);
+  if (closingBraceIndex < 0) return false;
+
+  return code.slice(closingBraceIndex + 1).trim().length === 0;
+}
+
 function getStrategyScript(strategyCode) {
   let cached = SCRIPT_CACHE.get(strategyCode);
   if (cached) return cached;
+
+  if (!isExactlyOneStrategyFunction(strategyCode.trim())) {
+    throw new Error('Strategy must be exactly one function declaration with no extra top-level code');
+  }
 
   const script = new Script(`
     'use strict';
@@ -79,7 +217,7 @@ function getStrategyScript(strategyCode) {
 function executeStrategy(strategyCode, agentState) {
   const { script } = getStrategyScript(strategyCode);
   const context = createContext(
-    { stateJson: JSON.stringify(agentState) },
+    createSandboxGlobals({ stateJson: JSON.stringify(agentState) }),
     { codeGeneration: { strings: false, wasm: false } },
   );
 
@@ -107,7 +245,10 @@ function executeRound(strategies, state) {
         sustainableShare: state.sustainableShare,
       };
 
-      const result = executeStrategy(strategies[i], agentState);
+      const result = serializeAcrossBoundary(
+        executeStrategy(strategies[i], agentState),
+        `Extraction result for agent ${i}`,
+      );
       extractions.push(result);
     } catch (err) {
       extractions.push({ error: err?.message || String(err), agentIndex: i });
@@ -154,16 +295,29 @@ function isExecuteRoundMessage(msg) {
 
 // --- Economy VM Context (v0.3.0) ---
 
-let economyContext = null;
-let economyFunctions = null;
+let economyModuleScript = null;
 
-function loadEconomyModule(code) {
-  // Create a persistent VM context for the economy module
+function evaluateEconomyModule() {
+  if (!economyModuleScript) {
+    throw new Error('Economy module not loaded');
+  }
+
   const ctx = createContext(
-    { exports: {} },
+    createSandboxGlobals({ exports: {} }),
     { codeGeneration: { strings: false, wasm: false } },
   );
 
+  economyModuleScript.runInContext(ctx, { timeout: ECONOMY_TIMEOUT_MS });
+
+  const missing = REQUIRED_ECONOMY_EXPORTS.filter(name => typeof ctx.exports[name] !== 'function');
+  if (missing.length > 0) {
+    throw new Error(`Economy module missing exports: ${missing.join(', ')}`);
+  }
+
+  return ctx.exports;
+}
+
+function loadEconomyModule(code) {
   // Compile and run the economy module code to populate exports
   // Replace 'export function X' with 'exports.X = function X' for VM compatibility
   const moduleCode = code.replace(/export\s+function\s+(\w+)/g, 'exports.$1 = function $1');
@@ -171,17 +325,8 @@ function loadEconomyModule(code) {
   const finalCode = moduleCode.replace(/export\s+const\s+(\w+)/g, 'exports.$1');
 
   const script = new Script(`'use strict';\n${finalCode}`);
-  script.runInContext(ctx, { timeout: ECONOMY_TIMEOUT_MS });
-
-  // Verify all 6 required exports exist
-  const required = ['initState', 'tick', 'extractMetrics', 'checkInvariants', 'isCollapsed', 'getObservations'];
-  const missing = required.filter(name => typeof ctx.exports[name] !== 'function');
-  if (missing.length > 0) {
-    throw new Error(`Economy module missing exports: ${missing.join(', ')}`);
-  }
-
-  economyContext = ctx;
-  economyFunctions = ctx.exports;
+  economyModuleScript = script;
+  evaluateEconomyModule();
 }
 
 const ALLOWED_ECONOMY_FUNCTIONS = new Set(['initState', 'tick', 'extractMetrics', 'checkInvariants', 'isCollapsed', 'getObservations']);
@@ -190,17 +335,15 @@ function callEconomyFunction(fnName, args) {
   if (!ALLOWED_ECONOMY_FUNCTIONS.has(fnName)) {
     throw new Error(`Economy function ${fnName} is not an allowed export`);
   }
-  if (!economyFunctions || !economyFunctions[fnName]) {
-    throw new Error(`Economy function ${fnName} not loaded`);
-  }
 
   // Serialize args through JSON to prevent context leakage
-  const safeArgs = JSON.parse(JSON.stringify(args));
+  const safeArgs = serializeAcrossBoundary(args, `Arguments for ${fnName}`);
+  const economyFunctions = evaluateEconomyModule();
 
   const result = economyFunctions[fnName](...safeArgs);
 
   // Serialize result through JSON to prevent context leakage
-  return JSON.parse(JSON.stringify(result));
+  return serializeAcrossBoundary(result, `Result from ${fnName}`);
 }
 
 // Execute strategies with observation-based state (scenario mode)
@@ -221,7 +364,10 @@ function executeScenarioStrategies(strategies, observations, scenario) {
       };
 
       // Execute strategy in fresh VM context (same as regular strategies)
-      const result = executeStrategy(strategies[i], stateForAgent);
+      const result = serializeAcrossBoundary(
+        executeStrategy(strategies[i], stateForAgent),
+        `Scenario strategy result for agent ${i}`,
+      );
 
       // Strategy should return an AgentDecision object: { action: string, params: {} }
       if (result && typeof result === 'object' && typeof result.action === 'string') {
@@ -276,6 +422,15 @@ safeProcess.on('message', (msg) => {
 
   // v0.3.0: Call economy function (initState, tick, extractMetrics, etc.)
   if (isPlainObject(msg) && msg.type === 'economy_call' && Number.isInteger(msg.requestId)) {
+    if (typeof msg.fnName !== 'string') {
+      safeProcess.send?.({
+        type: 'economy_call_result',
+        requestId: msg.requestId,
+        success: false,
+        error: 'fnName must be a string',
+      });
+      return;
+    }
     try {
       const result = callEconomyFunction(msg.fnName, msg.args || []);
       safeProcess.send?.({
@@ -314,10 +469,14 @@ safeProcess.on('message', (msg) => {
         decisions,
       });
     } catch (err) {
+      const strategyCount = Array.isArray(msg.strategies) ? msg.strategies.length : 0;
       safeProcess.send?.({
         type: 'scenario_strategies_result',
         requestId: msg.requestId,
-        decisions: msg.strategies.map((_, i) => ({ error: err?.message || String(err), agentIndex: i })),
+        decisions: Array.from({ length: strategyCount }, (_, i) => ({
+          error: err?.message || String(err),
+          agentIndex: i,
+        })),
       });
     }
     return;

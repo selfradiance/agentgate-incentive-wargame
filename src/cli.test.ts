@@ -41,6 +41,11 @@ describe('parseAndValidateArgs', () => {
     expect(flags.spec).toBe('examples/commons.txt');
   });
 
+  it('rejects a blank --spec path', () => {
+    expect(() => parseAndValidateArgs(['--spec', '   ']))
+      .toThrow(/--spec must be a non-empty file path/);
+  });
+
   it('defaults spec to null when not provided', () => {
     const flags = parseAndValidateArgs([]);
     expect(flags.spec).toBeNull();

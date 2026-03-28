@@ -209,4 +209,52 @@ describe('RoundDispatcher — economy VM', () => {
     const result = await dispatcher.executeRound(strategies, state);
     expect(result.extractions[0]).toBe(200);
   });
+
+  it('does not preserve hidden module-scope state across economy calls', async () => {
+    dispatcher = new RoundDispatcher();
+    await dispatcher.spawn();
+
+    const hiddenStateCode = `
+export function initState(scenario) {
+  return { round: 0 };
+}
+
+export function tick(state, decisions, scenario) {
+  return { round: state.round + 1 };
+}
+
+export function extractMetrics(state, scenario) {
+  return { seen: COUNTER.length };
+}
+
+export function checkInvariants(state, scenario) {
+  return [];
+}
+
+export function isCollapsed(state, scenario) {
+  return false;
+}
+
+export function getObservations(state, agentIndex, scenario) {
+  COUNTER.push(agentIndex);
+  return { seen: COUNTER.length };
+}
+
+const COUNTER = [];
+`;
+
+    const loadResult = await dispatcher.loadEconomy(hiddenStateCode);
+    expect(loadResult.success).toBe(true);
+
+    const initResult = await dispatcher.callEconomyFunction('initState', [SCENARIO]);
+    expect(initResult.success).toBe(true);
+
+    const obs1 = await dispatcher.callEconomyFunction('getObservations', [initResult.result, 0, SCENARIO]);
+    const obs2 = await dispatcher.callEconomyFunction('getObservations', [initResult.result, 0, SCENARIO]);
+
+    expect(obs1.success).toBe(true);
+    expect(obs2.success).toBe(true);
+    expect((obs1.result as Record<string, unknown>).seen).toBe(1);
+    expect((obs2.result as Record<string, unknown>).seen).toBe(1);
+  });
 });

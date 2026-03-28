@@ -344,12 +344,38 @@ export interface ScenarioRunResult {
   invalidDecisions: { round: number; agentIndex: number; errors: string[] }[];
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isFiniteNumberRecord(value: unknown): value is Record<string, number> {
+  return isPlainObject(value)
+    && Object.values(value).every(entry => typeof entry === 'number' && Number.isFinite(entry));
+}
+
 function checkHardInvariants(
-  state: Record<string, unknown>,
+  state: unknown,
   round: number,
   agentCount: number,
 ): HardInvariantViolation[] {
   const violations: HardInvariantViolation[] = [];
+
+  if (!isPlainObject(state)) {
+    violations.push({
+      round,
+      type: 'missing-field',
+      details: 'Economy state must be a plain object root',
+    });
+    return violations;
+  }
+
+  if (!Number.isInteger(state.round) || (state.round as number) < 0) {
+    violations.push({
+      round,
+      type: 'missing-field',
+      details: 'Economy state.round must be a non-negative integer',
+    });
+  }
 
   // Deep check for NaN/Infinity in state values
   // Note: JSON.stringify turns NaN → null, so we always walk the state tree
@@ -399,6 +425,11 @@ export async function runScenarioSimulation(opts: ScenarioRunnerOptions): Promis
       throw new Error(`Failed to initialize economy state: ${initResult.error}`);
     }
 
+    const initHardViolations = checkHardInvariants(initResult.result, 0, scenario.agentCount);
+    if (initHardViolations.length > 0) {
+      throw new Error(initHardViolations.map(v => v.details).join('; '));
+    }
+
     let state = initResult.result as Record<string, unknown>;
     const metricsPerRound: Record<string, number>[] = [];
     const softViolations: string[] = [];
@@ -416,14 +447,18 @@ export async function runScenarioSimulation(opts: ScenarioRunnerOptions): Promis
       const observations: Record<string, unknown>[] = [];
       for (let i = 0; i < scenario.agentCount; i++) {
         const obsResult = await dispatcher.callEconomyFunction('getObservations', [state, i, scenario]);
-        if (obsResult.success) {
-          const obs = obsResult.result as Record<string, unknown>;
+        if (obsResult.success && isPlainObject(obsResult.result)) {
+          const obs = { ...obsResult.result };
           // Inject round/totalRounds for strategy context
           obs._round = r;
           obs._totalRounds = rounds;
           observations.push(obs);
         } else {
-          observations.push({ _round: r, _totalRounds: rounds, agentIndex: i });
+          observations.push({
+            _round: r,
+            _totalRounds: rounds,
+            agentIndex: i,
+          });
         }
       }
 
@@ -435,7 +470,7 @@ export async function runScenarioSimulation(opts: ScenarioRunnerOptions): Promis
       );
 
       // Validate decisions against schema
-      const validatedDecisions: AgentDecision[] = [];
+      const validatedDecisions: (AgentDecision | null)[] = [];
 
       for (let i = 0; i < scenario.agentCount; i++) {
         const raw = stratResult.decisions[i];
@@ -443,9 +478,7 @@ export async function runScenarioSimulation(opts: ScenarioRunnerOptions): Promis
         if (raw && 'error' in raw) {
           // Strategy error — treat as no-op
           invalidDecisions.push({ round: r, agentIndex: i, errors: [raw.error as string] });
-          // Use first action with zero/minimal params as no-op
-          const noOp = makeNoOpDecision(scenario);
-          validatedDecisions.push(noOp);
+          validatedDecisions.push(makeNoOpDecision());
           continue;
         }
 
@@ -454,8 +487,7 @@ export async function runScenarioSimulation(opts: ScenarioRunnerOptions): Promis
         const validation = validateDecision(raw, scenario, i, agentRole);
         if (!validation.valid) {
           invalidDecisions.push({ round: r, agentIndex: i, errors: validation.errors });
-          const noOp = makeNoOpDecision(scenario);
-          validatedDecisions.push(noOp);
+          validatedDecisions.push(makeNoOpDecision());
         } else {
           validatedDecisions.push(raw as unknown as AgentDecision);
         }
@@ -483,21 +515,65 @@ export async function runScenarioSimulation(opts: ScenarioRunnerOptions): Promis
 
       // Soft invariant checks (economy-side)
       const softResult = await dispatcher.callEconomyFunction('checkInvariants', [state, scenario]);
-      if (softResult.success && Array.isArray(softResult.result)) {
-        for (const v of softResult.result as string[]) {
-          softViolations.push(`[Round ${r}] ${v}`);
-        }
+      if (!softResult.success) {
+        hardViolations.push({
+          round: r,
+          type: 'missing-field',
+          details: `checkInvariants() failed: ${softResult.error}`,
+        });
+        break;
+      }
+      if (!Array.isArray(softResult.result) || !softResult.result.every(v => typeof v === 'string')) {
+        hardViolations.push({
+          round: r,
+          type: 'missing-field',
+          details: 'checkInvariants() must return string[]',
+        });
+        break;
+      }
+      for (const v of softResult.result) {
+        softViolations.push(`[Round ${r}] ${v}`);
       }
 
       // Extract metrics
       const metricsResult = await dispatcher.callEconomyFunction('extractMetrics', [state, scenario]);
-      if (metricsResult.success) {
-        metricsPerRound.push(metricsResult.result as Record<string, number>);
+      if (!metricsResult.success) {
+        hardViolations.push({
+          round: r,
+          type: 'missing-field',
+          details: `extractMetrics() failed: ${metricsResult.error}`,
+        });
+        break;
       }
+      if (!isFiniteNumberRecord(metricsResult.result)) {
+        hardViolations.push({
+          round: r,
+          type: 'nan-detected',
+          details: 'extractMetrics() must return a plain object with finite numeric values',
+        });
+        break;
+      }
+      metricsPerRound.push(metricsResult.result);
 
       // Check collapse
       const collapseResult = await dispatcher.callEconomyFunction('isCollapsed', [state, scenario]);
-      if (collapseResult.success && collapseResult.result === true) {
+      if (!collapseResult.success) {
+        hardViolations.push({
+          round: r,
+          type: 'missing-field',
+          details: `isCollapsed() failed: ${collapseResult.error}`,
+        });
+        break;
+      }
+      if (typeof collapseResult.result !== 'boolean') {
+        hardViolations.push({
+          round: r,
+          type: 'missing-field',
+          details: 'isCollapsed() must return a boolean',
+        });
+        break;
+      }
+      if (collapseResult.result === true) {
         collapsed = true;
         collapseRound = r;
       }
@@ -520,16 +596,6 @@ export async function runScenarioSimulation(opts: ScenarioRunnerOptions): Promis
   }
 }
 
-function makeNoOpDecision(scenario: NormalizedScenario): AgentDecision {
-  if (scenario.actions.length === 0) {
-    return { action: 'noop', params: {} };
-  }
-  const firstAction = scenario.actions[0];
-  const params: Record<string, number | string | boolean> = {};
-  for (const p of firstAction.params) {
-    if (p.type === 'number') params[p.name] = p.min ?? 0;
-    else if (p.type === 'boolean') params[p.name] = false;
-    else params[p.name] = '';
-  }
-  return { action: firstAction.name, params };
+function makeNoOpDecision(): null {
+  return null;
 }

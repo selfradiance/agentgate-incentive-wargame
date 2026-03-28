@@ -103,6 +103,23 @@ describe('validateStrategy', () => {
     expect(result.valid).toBe(false);
     expect(result.errors.some(e => e.includes('string-concatenated property access'))).toBe(true);
   });
+
+  it('rejects console bracket access', () => {
+    const code = `function t(state) {
+  console['log'](state.poolLevel);
+  return 0;
+}`;
+    const result = validateStrategy(code);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some(e => e.includes('console'))).toBe(true);
+  });
+
+  it('rejects comma-expression payloads before the function value', () => {
+    const code = 'function a(state) { return 0; }, (Object.freeze = x => x), function b(state) { return 1; }';
+    const result = validateStrategy(code);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some(e => e.includes('exactly one function declaration'))).toBe(true);
+  });
 });
 
 // --- Economy Module Validation ---
@@ -289,6 +306,12 @@ describe('validateDecision', () => {
     expect(result.errors.some(e => e.includes('not allowed to perform'))).toBe(true);
   });
 
+  it('rejects role-gated action when agent role is missing', () => {
+    const result = validateDecision({ action: 'extract', params: { amount: 100 } }, makeScenario(), 0);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some(e => e.includes('requires an agent role'))).toBe(true);
+  });
+
   it('allows action with empty allowedRoles for any role', () => {
     const result = validateDecision({ action: 'vote', params: { support: true } }, makeScenario(), 0, 'anyone');
     expect(result.valid).toBe(true);
@@ -298,5 +321,11 @@ describe('validateDecision', () => {
     const result = validateDecision({ action: 'vote', params: { support: 'yes' } }, makeScenario(), 0);
     expect(result.valid).toBe(false);
     expect(result.errors.some(e => e.includes('must be a boolean'))).toBe(true);
+  });
+
+  it('rejects unexpected params', () => {
+    const result = validateDecision({ action: 'vote', params: { support: true, amount: 10 } }, makeScenario(), 0);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some(e => e.includes('Unexpected param'))).toBe(true);
   });
 });

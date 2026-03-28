@@ -152,6 +152,14 @@ describe('validateNormalizedScenario', () => {
     expect(result.valid).toBe(true);
   });
 
+  it('rejects action allowedRoles that reference unknown roles', () => {
+    const s = makeValidScenario();
+    s.actions[0].allowedRoles = ['harvester'];
+    const result = validateNormalizedScenario(s);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some(e => e.includes('unknown role'))).toBe(true);
+  });
+
   // --- Observation model validation ---
 
   it('rejects empty observationModel', () => {
@@ -182,6 +190,14 @@ describe('validateNormalizedScenario', () => {
     s.observationModel.push({ name: 'history', type: 'number[]', visibility: 'public', description: 'History' });
     const result = validateNormalizedScenario(s);
     expect(result.valid).toBe(true);
+  });
+
+  it('rejects reserved internal observation field names', () => {
+    const s = makeValidScenario();
+    s.observationModel[0].name = '_role';
+    const result = validateNormalizedScenario(s);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some(e => e.includes('reserved name'))).toBe(true);
   });
 
   // --- Rule validation ---
@@ -280,5 +296,12 @@ describe('validateNormalizedScenario', () => {
     });
     expect(result.valid).toBe(false);
     expect(result.errors.length).toBeGreaterThan(5);
+  });
+
+  it('rejects overly long descriptive text', () => {
+    const s = makeValidScenario({ description: 'x'.repeat(1001) });
+    const result = validateNormalizedScenario(s);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some(e => e.includes('maximum length'))).toBe(true);
   });
 });

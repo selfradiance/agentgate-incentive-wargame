@@ -361,7 +361,7 @@ export interface GeneratedEconomy {
   initState: (scenario: NormalizedScenario) => Record<string, unknown>;
   tick: (
     state: Record<string, unknown>,
-    decisions: AgentDecision[],
+    decisions: (AgentDecision | null)[],
     scenario: NormalizedScenario,
   ) => Record<string, unknown>;
   extractMetrics: (state: Record<string, unknown>, scenario: NormalizedScenario) => Record<string, number>;

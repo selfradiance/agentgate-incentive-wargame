@@ -163,4 +163,116 @@ describe('runScenarioSimulation', () => {
     // Simulation should still complete
     expect(result.rounds).toBe(5);
   }, 10000);
+
+  it('treats invalid decisions as null no-ops instead of inventing a first action', async () => {
+    const noOpEconomy = `
+export function initState(scenario) {
+  return { round: 0, acted: 0 };
+}
+
+export function tick(state, decisions, scenario) {
+  return {
+    round: state.round + 1,
+    acted: state.acted + decisions.filter(d => d !== null).length,
+  };
+}
+
+export function extractMetrics(state, scenario) {
+  return { acted: state.acted };
+}
+
+export function checkInvariants(state, scenario) {
+  return [];
+}
+
+export function isCollapsed(state, scenario) {
+  return false;
+}
+
+export function getObservations(state, agentIndex, scenario) {
+  return { poolLevel: 1000, myWealth: 0 };
+}
+`;
+
+    const badStrategies = [
+      { archetypeIndex: 0, archetypeName: 'Bad0', code: 'function bad0(state) { return "not a decision"; }', isFallback: false },
+      { archetypeIndex: 1, archetypeName: 'Bad1', code: 'function bad1(state) { return "not a decision"; }', isFallback: false },
+      { archetypeIndex: 2, archetypeName: 'Bad2', code: 'function bad2(state) { return "not a decision"; }', isFallback: false },
+    ];
+
+    const result = await runScenarioSimulation({
+      scenario,
+      economyCode: noOpEconomy,
+      archetypes,
+      strategies: badStrategies,
+      rounds: 3,
+    });
+
+    expect(result.invalidDecisions).toHaveLength(9);
+    expect((result.finalState as Record<string, unknown>).acted).toBe(0);
+  }, 10000);
+
+  it('records a hard violation instead of throwing when tick returns a non-object root', async () => {
+    const malformedEconomy = `
+export function initState(scenario) {
+  return { round: 0 };
+}
+
+export function tick(state, decisions, scenario) {
+  return null;
+}
+
+export function extractMetrics(state, scenario) {
+  return { round: state.round };
+}
+
+export function checkInvariants(state, scenario) {
+  return [];
+}
+
+export function isCollapsed(state, scenario) {
+  return false;
+}
+
+export function getObservations(state, agentIndex, scenario) {
+  return { poolLevel: 1000, myWealth: 0 };
+}
+`;
+
+    const result = await runScenarioSimulation({
+      scenario,
+      economyCode: malformedEconomy,
+      archetypes,
+      strategies,
+      rounds: 2,
+    });
+
+    expect(result.hardViolations.length).toBeGreaterThan(0);
+    expect(result.hardViolations[0].details).toContain('plain object root');
+    expect(result.rounds).toBe(0);
+  }, 10000);
+
+  it('rejects role-gated actions when the economy does not provide _role metadata', async () => {
+    const roleScenario: NormalizedScenario = {
+      ...scenario,
+      roles: [{ name: 'harvester', description: 'Harvests' }],
+      actions: [{
+        name: 'extract',
+        description: 'Extract',
+        params: [{ name: 'amount', type: 'number', min: 0, max: 200, description: 'Amount' }],
+        allowedRoles: ['harvester'],
+      }],
+    };
+
+    const result = await runScenarioSimulation({
+      scenario: roleScenario,
+      economyCode: ECONOMY_CODE,
+      archetypes,
+      strategies,
+      rounds: 2,
+    });
+
+    expect(result.invalidDecisions.length).toBeGreaterThan(0);
+    expect(result.invalidDecisions[0].errors.some(e => e.includes('requires an agent role'))).toBe(true);
+  }, 10000);
 });

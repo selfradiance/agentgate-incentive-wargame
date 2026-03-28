@@ -203,6 +203,41 @@ describe('RoundDispatcher', () => {
     );
   }, 10000);
 
+  it('blocks console bracket access inside the vm context', async () => {
+    dispatcher = new RoundDispatcher();
+    await dispatcher.spawn();
+
+    const strategies = [
+      `function probe(state) {
+        console['log'](state.poolLevel);
+        return 1;
+      }`,
+    ];
+
+    const state = makeState({ agentCount: 1, agentWealth: [0], agentHistory: [[]], sustainableShare: 100 });
+    const result = await dispatcher.executeRound(strategies, state);
+
+    expect(result.extractions[0]).toEqual(
+      expect.objectContaining({ error: expect.stringContaining('log') })
+    );
+  }, 10000);
+
+  it('rejects strategies with extra top-level expressions even if executeRound is called directly', async () => {
+    dispatcher = new RoundDispatcher();
+    await dispatcher.spawn();
+
+    const strategies = [
+      'function a(state) { return 0; }, (Object.freeze = x => x), function b(state) { state.poolHistory.push(1); return 1; }',
+    ];
+
+    const state = makeState({ agentCount: 1, agentWealth: [0], agentHistory: [[]], sustainableShare: 100 });
+    const result = await dispatcher.executeRound(strategies, state);
+
+    expect(result.extractions[0]).toEqual(
+      expect.objectContaining({ error: expect.stringContaining('exactly one function declaration') })
+    );
+  }, 10000);
+
   it('prevents prototype poisoning from leaking across rounds', async () => {
     dispatcher = new RoundDispatcher();
     await dispatcher.spawn();
